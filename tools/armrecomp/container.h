@@ -38,9 +38,25 @@ typedef enum {
 /* SCE header magic, little-endian "SCE\0". */
 #define VC_SCE_MAGIC 0x00454353u
 
-/* ELF e_type values a Vita module can carry. ET_SCE_RELEXEC is the interesting
- * one: a relocatable executable, which is what almost every retail eboot is. */
+/* ELF e_type values a Vita module can carry.
+ *
+ * The distinction between the two SCE types is not cosmetic — it decides how
+ * much of a module function discovery can reach.
+ *
+ *   ET_SCE_RELEXEC (0xFE04)  relocatable. Carries PT_SCE_RELA segments, and a
+ *                            relocation entry naming a word that holds an
+ *                            address IS a stored function pointer — thread
+ *                            entries, callbacks, vtables. That is enumeration,
+ *                            not guesswork.
+ *   ET_SCE_EXEC    (0xFE00)  statically linked. Absolute addresses need no
+ *                            patching, so there are no relocations to mine and
+ *                            those pointers have to be recovered by shape,
+ *                            which is a heuristic.
+ *
+ * psprecomp hit exactly this split between the WTF microgames and its main
+ * executable, and the coverage difference was material. */
 #define VC_ET_EXEC        2
+#define VC_ET_SCE_EXEC    0xFE00
 #define VC_ET_SCE_RELEXEC 0xFE04
 
 /* ELF e_machine for ARM. */

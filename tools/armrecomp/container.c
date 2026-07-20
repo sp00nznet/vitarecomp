@@ -57,6 +57,7 @@ const char *vc_kind_name(vc_kind k) {
 const char *vc_elf_type_name(uint16_t t) {
     switch (t) {
         case VC_ET_EXEC:        return "ET_EXEC";
+        case VC_ET_SCE_EXEC:    return "ET_SCE_EXEC (static)";
         case VC_ET_SCE_RELEXEC: return "ET_SCE_RELEXEC";
         default:                return "?";
     }

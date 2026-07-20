@@ -117,15 +117,30 @@ segment table is plaintext, that is answerable with no key material at all.
 Across a corpus of QA/prototype builds and app-bundled system modules, **every
 segment is plaintext**, zlib-compressed only:
 
-| Module | Size | Entry | Segments | Encrypted |
-|---|---:|---|---:|---:|
-| Titan Souls (2015-04-01) | 1,680,560 | `0x002B36E8` | 5 | **0** |
-| Shovel Knight (2015-04-08) | 2,306,752 | `0x00306030` | 5 | **0** |
-| Super Blackout (2015-07-26) | 1,571,696 | `0x00209488` | 5 | **0** |
-| Super Meat Boy (2015-09-18) | 945,600 | `0x0014A1F4` | 5 | **0** |
-| Volume (2015-12-09) | 17,110,432 | `0x025D0660` | 5 | **0** |
-| `libc.suprx` | 202,560 | `0x0003B4F8` | 5 | **0** |
-| `libfios2.suprx` | 116,928 | `0x00022878` | 5 | **0** |
+| Module | Size | `.text` | Entry | `e_type` | Encrypted |
+|---|---:|---:|---|---|---:|
+| Uncharted: Fight for Fortune (2012-11-01) | 2,871,472 | 5,656,372 | `0x004BA470` | `SCE_EXEC` | **0** |
+| Titan Souls (2015-04-01) | 1,680,560 | 3,053,164 | `0x002B36E8` | `SCE_RELEXEC` | **0** |
+| Shovel Knight (2015-04-08) | 2,306,752 | 3,582,384 | `0x00306030` | `SCE_RELEXEC` | **0** |
+| Super Blackout (2015-07-26) | 1,571,696 | — | `0x00209488` | `SCE_RELEXEC` | **0** |
+| Super Meat Boy (2015-09-18) | 945,600 | — | `0x0014A1F4` | `SCE_RELEXEC` | **0** |
+| Volume (2015-12-09) | 17,110,432 | — | `0x025D0660` | `SCE_RELEXEC` | **0** |
+| `libc.suprx` | 202,560 | 326,740 | `0x0003B4F8` | `SCE_RELEXEC` | **0** |
+| `libfios2.suprx` | 116,928 | — | `0x00022878` | `SCE_RELEXEC` | **0** |
+
+### Static vs relocatable is the split that matters
+
+`e_type` is not cosmetic. `ET_SCE_RELEXEC` modules carry `PT_SCE_RELA`
+segments, and a relocation naming a word that holds an address **is** a stored
+function pointer — thread entries, callbacks, vtables. Mining them is
+enumeration, not guesswork, and on PSP it moved coverage from 75% to 89%.
+
+`ET_SCE_EXEC` modules are statically linked: absolute addresses need no
+patching, so there are no relocations to mine. Uncharted: Fight for Fortune is
+the only module measured so far that is static — it has **no `SCE_RELA`
+segments at all**, where every other module has two. Recovering its function
+pointers falls back to recognising them by shape (in range, instruction-aligned,
+decodes as an instruction), which is a heuristic and is kept labelled as one.
 
 That is a large claim, so it is checked against the bytes rather than the flag:
 every segment begins with a valid zlib header, and offset `0x1000` holds a
