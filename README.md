@@ -119,12 +119,19 @@ segment is plaintext**, zlib-compressed only:
 
 | Module | Size | `.text` | Entry | `e_type` | Encrypted |
 |---|---:|---:|---|---|---:|
-| Uncharted: Fight for Fortune (2012-11-01) | 2,871,472 | 5,656,372 | `0x004BA470` | `SCE_EXEC` | **0** |
+| LittleBigPlanet (2012-07-31) | 4,866,592 | 8,780,492 | `0x00766468` | `SCE_EXEC` | **0** |
+| AC III: Liberation (2012-09-09) | 15,049,328 | 36,615,592 | `0x01F92E0C` | `SCE_EXEC` | **0** |
+| Ragnarok Odyssey (2012-09-13) | 2,592,576 | 4,692,640 | `0x0039D2C0` | `SCE_EXEC` | **0** |
+| CoD: Black Ops Declassified (2012-10-02) | 4,836,896 | 9,561,752 | `0x007C1F1C` | `SCE_EXEC` | **0** |
+| **Uncharted: Fight for Fortune** (2012-11-01) | 2,871,472 | 5,656,372 | `0x004BA470` | `SCE_EXEC` | **0** |
+| Guacamelee! (2013-03-06) | 4,317,584 | — | — | `SCE_EXEC` | **0** |
+| Valhalla Knights 3 (2013-05-30) | 2,523,552 | 5,596,220 | `0x004032DC` | `SCE_EXEC` | **0** |
 | Titan Souls (2015-04-01) | 1,680,560 | 3,053,164 | `0x002B36E8` | `SCE_RELEXEC` | **0** |
 | Shovel Knight (2015-04-08) | 2,306,752 | 3,582,384 | `0x00306030` | `SCE_RELEXEC` | **0** |
 | Super Blackout (2015-07-26) | 1,571,696 | — | `0x00209488` | `SCE_RELEXEC` | **0** |
 | Super Meat Boy (2015-09-18) | 945,600 | — | `0x0014A1F4` | `SCE_RELEXEC` | **0** |
 | Volume (2015-12-09) | 17,110,432 | — | `0x025D0660` | `SCE_RELEXEC` | **0** |
+| Trillion: God of Destruction (2016-02-15) | 2,093,456 | 3,375,228 | `0x002AAC68` | `SCE_RELEXEC` | **0** |
 | `libc.suprx` | 202,560 | 326,740 | `0x0003B4F8` | `SCE_RELEXEC` | **0** |
 | `libfios2.suprx` | 116,928 | — | `0x00022878` | `SCE_RELEXEC` | **0** |
 
@@ -136,11 +143,32 @@ function pointer — thread entries, callbacks, vtables. Mining them is
 enumeration, not guesswork, and on PSP it moved coverage from 75% to 89%.
 
 `ET_SCE_EXEC` modules are statically linked: absolute addresses need no
-patching, so there are no relocations to mine. Uncharted: Fight for Fortune is
-the only module measured so far that is static — it has **no `SCE_RELA`
-segments at all**, where every other module has two. Recovering its function
+patching, so there are no relocations to mine. Recovering their function
 pointers falls back to recognising them by shape (in range, instruction-aligned,
 decodes as an instruction), which is a heuristic and is kept labelled as one.
+
+**The split is not per-title — it is chronological**, and across 15 measured
+modules it has no exceptions:
+
+| Era | `e_type` | `SCE_RELA` segments | Modules |
+|---|---|---:|---:|
+| 2012-07 → 2013-05 | `ET_SCE_EXEC` | **0** | 7 |
+| 2015-04 → 2016-02 | `ET_SCE_RELEXEC` | 2 | 6 (+2 system modules) |
+
+The boundary falls somewhere between 2013-05 and 2015-04, which points at a
+toolchain generation change — but **that mechanism is unconfirmed, and the two
+obvious candidates were both refuted by measurement.** `sdk_type` is `0x00C0`
+on every module in the corpus, so it discriminates nothing. `sys_version` does
+not track the split either: *Guacamelee* (2013-03) and *Uncharted: Fight for
+Fortune* (2012-11) both carry the later `0x1010000000000` while still being
+static. The correlation is real; the cause is not established, and there is no
+earlier signal in the container than `e_type` itself.
+
+**Why this matters more than one title's difficulty:** the Vita exclusives worth
+recompiling are overwhelmingly launch-window titles, because that is when the
+platform still had exclusives — and the entire launch window is static. So
+shape-based pointer recovery is not a workaround for one awkward pick, it is
+required infrastructure for the early-era catalogue as a whole.
 
 That is a large claim, so it is checked against the bytes rather than the flag:
 every segment begins with a valid zlib header, and offset `0x1000` holds a
