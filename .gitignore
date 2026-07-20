@@ -1,0 +1,36 @@
+build/
+out/
+*.obj
+*.exe
+*.lib
+*.pdb
+*.ilk
+
+# --- no game data, ever -------------------------------------------------------
+# The recompiler is the product; the game is yours. Nothing below is ever
+# committed, and CI has no way to obtain any of it.
+*.vpk
+*.pkg
+*.self
+*.suprx
+*.skprx
+*.velf
+eboot.bin
+*.psvimg
+sce_module/
+sce_pfs/
+sce_sys/
+
+# Decrypted or extracted modules
+*.elf
+extracted/
+modules/
+
+# --- no key material, ever ----------------------------------------------------
+# See docs/DECRYPT.md. Keys load from an external file; only the template with
+# placeholder values is tracked.
+keys/
+!docs/vita_keys.example.txt
+
+# Generated recompiler output — millions of lines, rebuilt from your own dump.
+generated/
