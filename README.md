@@ -516,10 +516,49 @@ docs/                 DECRYPT (and, as they land: ARCHITECTURE · CONTAINERS ·
                       RECOMPILER · ORACLE)
 ```
 
+## The HLE work list, resolved
+
+```
+$ armrecomp funcs uncharted.elf path/to/vita-headers/db/360
+nid db:   154 files, 9274 functions
+...
+resolved 519 of 524 imported functions (99.0%)
+```
+
+Imports are NIDs — the first four bytes of the SHA-1 of a function's name — so
+the names come from the MIT [vita-headers](https://github.com/vitasdk/vita-headers)
+database. It is **loaded at run time, not vendored**: bundling it would be
+permitted, but it is data, and keeping it external means the toolkit carries no
+third-party source and a newer database needs no rebuild.
+
+**`SceGxm` is 107 functions, and that number is misleading.** About 85 are
+struct field writes — state setters, texture accessors, surface init. The real
+work is roughly 15 functions: GXP reflection, the scene pipeline, and the GXP
+shader translator, which is a compiler in its own right. See
+[`docs/HLE.md`](docs/HLE.md).
+
+## Why the HLE is written rather than borrowed
+
+Vita3K is **GPLv2** — its README attributes the choice to *"external
+dependencies, most notably Unicorn"*, a CPU emulator, which is exactly the
+component a static recompiler exists to replace. That gives no relicensing room,
+and there is no LGPL escape: the arrangement that works for
+[`xboxrecomp`](https://github.com/sp00nznet/xboxrecomp), extracting LGPL-2.1
+components from xemu, depends on **QEMU deliberately dual-tracking its hardware
+model under LGPL** so it can be embedded. Vita3K has no equivalent.
+
+What does carry over is everything else — independently implemented algorithms
+with credit, and functional facts (NIDs, struct layouts, enum values, calling
+conventions) which are not copyrightable and are most of what the shallow 85
+need. Vita3K stays a **behavioural oracle**: separate process, compared against,
+never linked.
+
 ## Documentation
 
 - [`docs/DECRYPT.md`](docs/DECRYPT.md) — the SELF container, what is encrypted
   and what is not, and why the QA corpus needs no keys.
+- [`docs/HLE.md`](docs/HLE.md) — the firmware surface, measured, and the order
+  of work.
 - [`ROADMAP.md`](ROADMAP.md) — phased plan.
 
 ## Credits & references

@@ -83,14 +83,23 @@ obstacle on this platform.
       most of the remaining ~31%
 - [ ] ARM (A32) operand decoding — a small minority of this corpus
 
-## Phase 6 — the runtime and HLE
+## Phase 6 — the runtime and HLE (in progress)
 
-- [ ] CPU state, memory, semantic helpers
+- [x] CPU state, memory, semantic helpers (landed with phase 5)
+- [x] **NID resolution against the MIT `vita-headers` database** — 519 of 524
+      imports resolved (99.0%) from 9,274 known functions
+- [x] The HLE work list sized and shaped: see [`docs/HLE.md`](docs/HLE.md)
+- [ ] Bind imports into a NID-keyed dispatch table
+- [ ] The shallow ~92 of `SceGxm`: state setters, texture accessors, mapping
+- [ ] `SceLibc` / `SceLibm` (96 functions), largely host-forwardable
 - [ ] `sceKernel` — threads, memory blocks, sync primitives
-- [ ] `sceGxm` — the hard one. A programmable pipeline, mapped onto a host
-      graphics API rather than reimplemented as a fixed-function display list.
-- [ ] `sceCtrl`, `sceDisplay`, `sceAudio`
-- [ ] NID resolution against the MIT `vita-headers` database
+- [ ] GXP reflection, then the scene pipeline
+- [ ] GXP shader translation — a compiler, and the largest single piece
+
+**Measured, not estimated:** `SceGxm` is 107 functions, but ~85 of them are
+struct field writes. The real work is ~15 functions, one of which is a shader
+compiler. Deferring the online-only libraries takes the whole target from 524 to
+roughly 412.
 
 ## Per-title repos
 

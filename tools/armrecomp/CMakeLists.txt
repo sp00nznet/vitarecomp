@@ -8,6 +8,7 @@ add_executable(armrecomp
     module.c
     analyze.c
     emit.c
+    nids.c
 )
 
 target_include_directories(armrecomp PRIVATE

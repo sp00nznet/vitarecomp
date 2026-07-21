@@ -1,8 +1,8 @@
-/* armrecomp — the Vita static-recompilation toolkit CLI.
+﻿/* armrecomp â€” the Vita static-recompilation toolkit CLI.
  *
  * Phase 1: identify any layer of the container stack and report exactly what
  * stands between here and decodable ARM code. No key material is needed for
- * any of this, and none is bundled — see docs/DECRYPT.md.
+ * any of this, and none is bundled â€” see docs/DECRYPT.md.
  */
 
 #include "container.h"
@@ -11,18 +11,19 @@
 #include "module.h"
 #include "analyze.h"
 #include "emit.h"
+#include "nids.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char *USAGE =
-    "armrecomp — static-recompilation toolkit for PlayStation Vita\n"
+    "armrecomp â€” static-recompilation toolkit for PlayStation Vita\n"
     "\n"
     "  armrecomp info    <file>          identify a module and report structure\n"
     "  armrecomp extract <file> <out>    SELF -> plain ELF32\n"
     "  armrecomp cover   <file.elf>      decode-coverage report\n"
-    "  armrecomp funcs   <file.elf>      module info and the HLE work list\n"
+    "  armrecomp funcs   <file.elf> [niddb]  module info and the HLE work list\n"
     "\n"
     "Accepts a SELF (eboot.bin, *.suprx) or a plain ELF/velf. A PFS-encrypted\n"
     "NoNpDrm dump is reported as such rather than parsed as garbage.\n";
@@ -168,13 +169,13 @@ static int cmd_info(const char *path) {
         printf("\n");
         if (disagree) {
             printf("%d segment(s) disagree with their own flags. Do not trust this\n", disagree);
-            printf("report — the container layout or the flag encoding is being misread.\n");
+            printf("report â€” the container layout or the flag encoding is being misread.\n");
         } else if (encrypted) {
             printf("%d of %d segments are encrypted. armrecomp does not ship or\n",
                    encrypted, m.seg_count);
             printf("derive key material; supply a decrypted ELF. See docs/DECRYPT.md.\n");
         } else {
-            printf("no encrypted segments, verified against zlib headers — this\n");
+            printf("no encrypted segments, verified against zlib headers â€” this\n");
             printf("module can go straight to the decoder once inflated.\n");
         }
     }
@@ -315,7 +316,7 @@ static int cmd_extract(const char *path, const char *outpath) {
      *
      * It is encoded relative to the module: the top two bits select a program
      * header, the low 30 are a byte offset into that segment. Checking it as an
-     * absolute address fails on every module — Uncharted's 0x004BA470 sits far
+     * absolute address fails on every module â€” Uncharted's 0x004BA470 sits far
      * below segment 0's vaddr of 0x81000000, while being comfortably inside
      * that segment's 5,656,372 bytes.
      *
@@ -420,7 +421,7 @@ static void sweep(const uint8_t *text, uint32_t vaddr, uint32_t len,
 /* Which instruction set is this really?
  *
  * NOT the unknown rate. That measures how permissive the decoder is for a given
- * mode, not whether the bytes are that mode — the ARM decoder assigns a class to
+ * mode, not whether the bytes are that mode â€” the ARM decoder assigns a class to
  * every op value, so it reports near-zero unknowns on any input at all,
  * including pure noise. An earlier revision used it and concluded that a module
  * whose returns are 10:1 Thumb was "dominant ARM".
@@ -429,7 +430,7 @@ static void sweep(const uint8_t *text, uint32_t vaddr, uint32_t len,
  * *arithmetic performed on the decoded bits* rather than a classification of
  * them. Decode real code in its real mode and its branches point at other code
  * in the same segment. Decode it in the wrong mode and the offsets are computed
- * from misaligned bits, so targets scatter — many landing outside the segment
+ * from misaligned bits, so targets scatter â€” many landing outside the segment
  * entirely. This is a check the wrong answer can fail. */
 static double target_score(const cover_stats *st) {
     if (st->targets == 0) return 0.0;
@@ -558,10 +559,21 @@ static int load_module(const char *path, uint8_t **buf, size_t *size,
     return 1;
 }
 
-static int cmd_funcs(const char *path) {
+static int cmd_funcs(const char *path, const char *dbdir) {
     uint8_t *buf; size_t size;
     vc_module vc; vm_image img; vm_module vm;
     if (!load_module(path, &buf, &size, &vc, &img, &vm)) return 1;
+
+    /* The NID database is optional. Without it the report still gives library
+     * NIDs and counts, which is enough to size the work; with it the report
+     * names every function, which is enough to plan it. */
+    nid_db *db = NULL;
+    if (dbdir) {
+        int files = 0, entries = 0;
+        db = nid_db_load(dbdir, &files, &entries);
+        if (db) printf("nid db:   %d files, %d functions\n\n", files, entries);
+        else    fprintf(stderr, "armrecomp: cannot read NID db at %s\n", dbdir);
+    }
 
     printf("module:   %s\n", vm.info.name);
     printf("  nid           0x%08X\n", vm.info.module_nid);
@@ -584,11 +596,34 @@ static int cmd_funcs(const char *path) {
         order[j + 1] = k;
     }
 
+    uint32_t named = 0, unnamed = 0;
     for (int i = 0; i < vm.import_count; i++) {
         const vm_import *im = &vm.imports[order[i]];
+        const char *ln = im->name[0] ? im->name : nid_lib_name(db, im->library_nid);
         printf("  %-32s %4u   nid 0x%08X\n",
-               im->name[0] ? im->name : "(unnamed)", im->num_funcs,
-               im->library_nid);
+               ln ? ln : "(unnamed)", im->num_funcs, im->library_nid);
+
+        if (!db) continue;
+
+        /* The NID table is an array of 32-bit hashes at an absolute virtual
+         * address, one per imported function, in the same order as the entry
+         * (stub) table. */
+        const uint8_t *t = vm_va(&img, im->func_nid_table,
+                                 (uint32_t)im->num_funcs * 4);
+        for (uint32_t k = 0; t && k < im->num_funcs; k++) {
+            uint32_t nid = (uint32_t)t[k*4] | ((uint32_t)t[k*4+1] << 8)
+                         | ((uint32_t)t[k*4+2] << 16) | ((uint32_t)t[k*4+3] << 24);
+            const char *fn = nid_func_name(db, im->library_nid, nid);
+            if (fn) { printf("      %-44s 0x%08X\n", fn, nid); named++; }
+            else    { printf("      %-44s 0x%08X\n", "(unresolved)", nid); unnamed++; }
+        }
+    }
+
+    if (db) {
+        printf("\nresolved %u of %u imported functions (%.1f%%)\n",
+               named, named + unnamed,
+               (named + unnamed) ? 100.0 * named / (named + unnamed) : 0.0);
+        nid_db_free(db);
     }
 
     if (vm.import_truncated)
@@ -702,7 +737,7 @@ int main(int argc, char **argv) {
     }
 
     if (strcmp(argv[1], "funcs") == 0 && argc >= 3)
-        return cmd_funcs(argv[2]);
+        return cmd_funcs(argv[2], argc >= 4 ? argv[3] : NULL);
 
     if (strcmp(argv[1], "discover") == 0 && argc >= 3)
         return cmd_discover(argv[2]);
@@ -723,3 +758,4 @@ int main(int argc, char **argv) {
     fputs(USAGE, stderr);
     return 2;
 }
+
