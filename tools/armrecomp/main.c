@@ -7,6 +7,7 @@
 
 #include "container.h"
 #include "inflate.h"
+#include "decode.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,7 @@ static const char *USAGE =
     "\n"
     "  armrecomp info    <file>          identify a module and report structure\n"
     "  armrecomp extract <file> <out>    SELF -> plain ELF32\n"
+    "  armrecomp cover   <file.elf>      decode-coverage report\n"
     "\n"
     "Accepts a SELF (eboot.bin, *.suprx) or a plain ELF/velf. A PFS-encrypted\n"
     "NoNpDrm dump is reported as such rather than parsed as garbage.\n";
@@ -354,6 +356,160 @@ fail:
     return 1;
 }
 
+/* --- cover: how much of a module do we actually understand? ---------------- */
+/*
+ * A linear sweep of .text in one instruction set. This is a MEASUREMENT, not a
+ * disassembly, and it is honest about two things that would otherwise inflate
+ * the result:
+ *
+ *  - .text contains data. ARM puts PC-relative constants in literal pools
+ *    *inside* the executable segment, so some fraction of any linear sweep is
+ *    decoding constants. Those bytes are not "instructions we failed to
+ *    decode"; they are not instructions.
+ *  - The instruction set is not knowable from a linear scan. Real code is
+ *    mixed, so the sweep is run BOTH ways and both results reported. Whichever
+ *    produces fewer unknowns is the module's dominant set, and the gap between
+ *    them is the useful number.
+ *
+ * Function-accurate coverage needs phase 4, which follows control flow and
+ * therefore knows the mode at every point. Until then this bounds the problem
+ * rather than pretending to solve it.
+ */
+
+typedef struct {
+    uint32_t count[A_NOP + 1];
+    uint32_t total;
+    uint32_t unknown;
+    uint32_t simd;
+    uint32_t widths[5];
+    uint32_t targets;       /* direct branches/calls with a computed target */
+    uint32_t targets_ok;    /* ...whose target lands inside this segment    */
+} cover_stats;
+
+static void sweep(const uint8_t *text, uint32_t vaddr, uint32_t len,
+                  arm_mode mode, cover_stats *st) {
+    memset(st, 0, sizeof(*st));
+
+    uint32_t a = vaddr;
+    const uint32_t end = vaddr + len;
+
+    while (a < end) {
+        arm_insn in;
+        int n = arm_decode(text, vaddr, len, a, mode, &in);
+        if (n == 0) break;
+
+        st->total++;
+        if (in.cls <= A_NOP) st->count[in.cls]++;
+        if (in.cls == A_UNKNOWN || in.cls == A_UNDEF) st->unknown++;
+        if (in.cls == A_SIMD) st->simd++;
+        if (n <= 4) st->widths[n]++;
+
+        if (in.has_target) {
+            st->targets++;
+            if (in.target >= vaddr && in.target < end) st->targets_ok++;
+        }
+
+        a += (uint32_t)n;
+    }
+}
+
+/* Which instruction set is this really?
+ *
+ * NOT the unknown rate. That measures how permissive the decoder is for a given
+ * mode, not whether the bytes are that mode — the ARM decoder assigns a class to
+ * every op value, so it reports near-zero unknowns on any input at all,
+ * including pure noise. An earlier revision used it and concluded that a module
+ * whose returns are 10:1 Thumb was "dominant ARM".
+ *
+ * Direct branch targets are the honest discriminator, because they are
+ * *arithmetic performed on the decoded bits* rather than a classification of
+ * them. Decode real code in its real mode and its branches point at other code
+ * in the same segment. Decode it in the wrong mode and the offsets are computed
+ * from misaligned bits, so targets scatter — many landing outside the segment
+ * entirely. This is a check the wrong answer can fail. */
+static double target_score(const cover_stats *st) {
+    if (st->targets == 0) return 0.0;
+    return (double)st->targets_ok / st->targets;
+}
+
+static void report(const char *label, const cover_stats *st) {
+    if (st->total == 0) { printf("  %-8s no instructions\n", label); return; }
+
+    printf("  %-8s %9u insns   unknown %6.2f%%   simd %5.2f%%   "
+           "branch targets in range %6.2f%%",
+           label, st->total,
+           100.0 * st->unknown / st->total,
+           100.0 * st->simd    / st->total,
+           100.0 * target_score(st));
+    if (st->widths[2])
+        printf("   16-bit %4.1f%%", 100.0 * st->widths[2] / st->total);
+    printf("\n");
+}
+
+static int cmd_cover(const char *path) {
+    size_t size = 0;
+    uint8_t *buf = slurp(path, &size);
+    if (!buf) {
+        fprintf(stderr, "armrecomp: cannot read %s\n", path);
+        return 1;
+    }
+
+    vc_module m;
+    char err[256];
+    if (vc_parse(buf, size, &m, err, sizeof(err))) {
+        fprintf(stderr, "armrecomp: %s\n", err);
+        free(buf);
+        return 1;
+    }
+    if (m.kind == VC_SELF) {
+        fprintf(stderr, "armrecomp: this is a SELF; run `extract` first\n");
+        free(buf);
+        return 1;
+    }
+
+    printf("file:     %s\n", path);
+
+    int found = 0;
+    for (int i = 0; i < m.phdr_count; i++) {
+        if (!(m.phdr[i].flags & 1)) continue;             /* PF_X only */
+        if (m.phdr[i].filesz == 0) continue;
+        if ((uint64_t)m.phdr[i].offset + m.phdr[i].filesz > size) {
+            fprintf(stderr, "armrecomp: segment %d extends past the file\n", i);
+            continue;
+        }
+        found = 1;
+
+        const uint8_t *text = buf + m.phdr[i].offset;
+        uint32_t vaddr = m.phdr[i].vaddr;
+        uint32_t len   = m.phdr[i].filesz;
+
+        printf("\nsegment %d  vaddr 0x%08X  %u bytes executable\n", i, vaddr, len);
+
+        cover_stats t, a;
+        sweep(text, vaddr, len, ARM_T32, &t);
+        sweep(text, vaddr, len, ARM_A32, &a);
+
+        report("thumb", &t);
+        report("arm",   &a);
+
+        const cover_stats *best = target_score(&t) >= target_score(&a) ? &t : &a;
+        printf("\n  dominant set: %s (by branch-target validity, not unknown rate)\n",
+               best == &t ? "Thumb-2" : "ARM");
+        printf("  class histogram (%s):\n", best == &t ? "thumb sweep" : "arm sweep");
+        for (int c = 0; c <= A_NOP; c++) {
+            if (!best->count[c]) continue;
+            printf("    %-10s %9u  %5.2f%%\n",
+                   arm_class_name((arm_class)c), best->count[c],
+                   100.0 * best->count[c] / best->total);
+        }
+    }
+
+    if (!found) fprintf(stderr, "armrecomp: no executable segment found\n");
+
+    free(buf);
+    return found ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fputs(USAGE, stderr);
@@ -365,6 +521,9 @@ int main(int argc, char **argv) {
 
     if (strcmp(argv[1], "extract") == 0 && argc >= 4)
         return cmd_extract(argv[2], argv[3]);
+
+    if (strcmp(argv[1], "cover") == 0 && argc >= 3)
+        return cmd_cover(argv[2]);
 
     fputs(USAGE, stderr);
     return 2;

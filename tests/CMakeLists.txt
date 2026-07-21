@@ -30,3 +30,16 @@ target_include_directories(test_inflate PRIVATE
 target_compile_options(test_inflate PRIVATE -UNDEBUG)
 
 add_test(NAME inflate COMMAND test_inflate)
+
+add_executable(test_decode
+    test_decode.c
+    ${CMAKE_SOURCE_DIR}/tools/armrecomp/decode.c
+)
+
+target_include_directories(test_decode PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools/armrecomp
+)
+
+target_compile_options(test_decode PRIVATE -UNDEBUG)
+
+add_test(NAME decode COMMAND test_decode)

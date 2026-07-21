@@ -32,18 +32,24 @@ Turn a SELF into a plain ELF32 on disk.
 
 **Not in scope, now or later:** key derivation, key extraction, the PFS layer.
 
-## Phase 3 — the decoder
+## Phase 3 — the decoder ✅ (classification; operands land in phase 5)
 
-- [ ] ARMv7-A integer set
-- [ ] Thumb-2, including IT blocks — the Vita's compilers emit Thumb-2 heavily,
-      and mixed ARM/Thumb interworking via `BX`/`BLX` means instruction width is
-      state-dependent rather than fixed. This is the Vita's equivalent of MIPS
-      delay slots: the thing that quietly produces a wrong decode.
-- [ ] VFP / NEON, identified and named even where not yet translated
-- [ ] PC-relative literal pools — ARM's `LDR Rd, [PC, #imm]` puts constants
-      *inside* `.text`, so a linear decode walks straight into data
-- [ ] `armrecomp cover` — decode-coverage and opcode-histogram report, so a
-      title's difficulty is measured before it is committed to
+- [x] ARMv7-A and Thumb-2, both instruction sets, with correct **width**
+      determination — the output that must never be wrong, since one bad width
+      desynchronises every instruction after it
+- [x] Control flow: branch/call/return/indirect, targets computed, conditionality
+      and interworking flagged
+- [x] IT blocks distinguished from the NOP hints sharing their encoding space
+- [x] VFP / NEON identified as a class even where not translated
+- [x] `armrecomp cover` — coverage, class histogram, and instruction-set
+      determination
+- [ ] Full operand decoding (deferred to phase 5, where the emitter needs it)
+- [ ] Literal-pool identification — currently counted as unknown rather than
+      recognised as data, which is why the unknown rate is an upper bound
+
+**Established across 16 modules:** every one is Thumb-2 dominant, and
+**NEON/SIMD is 0.71–5.34%** of instructions. The vector unit is not the
+obstacle on this platform.
 
 ## Phase 4 — function discovery
 

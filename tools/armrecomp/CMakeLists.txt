@@ -4,6 +4,7 @@ add_executable(armrecomp
     main.c
     container.c
     inflate.c
+    decode.c
 )
 
 target_include_directories(armrecomp PRIVATE

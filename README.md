@@ -114,8 +114,73 @@ module can go straight to the decoder once inflated.
   corpus extract and round-trip back through `info`**, from 236 KB
   (`libfios2.suprx`) to 53 MB (*Volume*).
 
-**Not started:** the ARMv7/Thumb-2 decoder, function discovery, the C emitter,
-the HLE layer. This is phase 2 of six.
+- ✅ **An ARMv7 + Thumb-2 decoder** (`decode.c`) — both instruction sets, with
+  correct width determination, control-flow extraction (targets, conditionality,
+  interworking), IT blocks distinguished from the NOP hints that share their
+  encoding, and NEON/VFP identified as a class. Operands land in phase 5.
+- ✅ **`armrecomp cover`** — coverage, class histogram, and instruction-set
+  determination over 16 modules.
+
+**Not started:** function discovery, the C emitter, the HLE layer. This is
+phase 3 of six.
+
+## NEON is not the obstacle
+
+The usual reason given for the Vita being a hard recompilation target is its
+NEON vector unit. Measured across the corpus, **NEON/SIMD is 0.71–5.34% of
+instructions** — 2.45% in *Uncharted: Fight for Fortune*. Recompiling the
+integer core, which is ordinary well-documented ARMv7, gets you most of a game.
+
+Every module in the corpus is **Thumb-2 dominant**, with a real ARM minority
+that makes mode tracking mandatory rather than optional.
+
+```
+$ armrecomp cover uncharted.elf
+segment 0  vaddr 0x81000000  5656372 bytes executable
+  thumb    2137553 insns  unknown 3.67%  simd 2.45%  branch targets in range 99.89%  16-bit 67.7%
+  arm      1414093 insns  unknown 1.66%  simd 13.52%  branch targets in range 32.15%
+
+  dominant set: Thumb-2 (by branch-target validity, not unknown rate)
+    alu           936488  43.81%
+    load          352769  16.50%
+    store         291456  13.64%
+    branch        256083  11.98%
+    call          102178   4.78%
+    return         32078   1.50%
+    simd           52427   2.45%
+    sys             1496   0.07%
+```
+
+### A correction worth recording: the unknown rate is not a validity measure
+
+The first version of `cover` picked the dominant instruction set by whichever
+sweep produced fewer unknowns, and confidently reported **ARM** for a module
+whose returns are 10:1 Thumb.
+
+The reason is that the unknown rate measures *how permissive the decoder is for
+a given mode*, not whether the bytes are that mode. The ARM decoder assigns a
+class to every `op` value, so it reports near-zero unknowns on any input at all
+— including pure noise. Two tells gave it away: the ARM sweep claimed **22.62%
+system instructions** and **13.52% SIMD**, and no real compiled code has that
+shape.
+
+The honest discriminator is **branch-target validity**, because it is arithmetic
+performed on the decoded bits rather than a classification of them. Decode real
+code in its real mode and its branches point at other code in the same segment;
+decode it in the wrong mode and the offsets come from misaligned bits and
+scatter. It is a check the wrong answer can fail — 99.89% versus 32.15% on the
+same bytes.
+
+**Its known limit:** the in-range test weakens as the segment grows, since a
+larger segment is an easier target to hit by chance. *Volume* (53 MB) scores ARM
+at 96.30% and *AC III: Liberation* at 77.92%, where normal-sized modules put ARM
+at 16–45%. Thumb wins everywhere, but the metric is least discriminating exactly
+where the module is largest.
+
+**The unknown rate is an upper bound, not a decode failure rate.** ARM puts
+PC-relative constants in literal pools *inside* `.text`, so part of any linear
+sweep is decoding data. Those bytes are not instructions we failed to decode;
+they are not instructions. Separating them needs phase 4's control flow.
 
 ### Reassembly is checkable, not merely plausible
 
