@@ -8,6 +8,8 @@
 #include "container.h"
 #include "inflate.h"
 #include "decode.h"
+#include "module.h"
+#include "analyze.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +21,7 @@ static const char *USAGE =
     "  armrecomp info    <file>          identify a module and report structure\n"
     "  armrecomp extract <file> <out>    SELF -> plain ELF32\n"
     "  armrecomp cover   <file.elf>      decode-coverage report\n"
+    "  armrecomp funcs   <file.elf>      module info and the HLE work list\n"
     "\n"
     "Accepts a SELF (eboot.bin, *.suprx) or a plain ELF/velf. A PFS-encrypted\n"
     "NoNpDrm dump is reported as such rather than parsed as garbage.\n";
@@ -510,11 +513,160 @@ static int cmd_cover(const char *path) {
     return found ? 0 : 1;
 }
 
+/* --- funcs: the module's own account of what it needs ---------------------- */
+
+/* Locate the executable segment and describe it for the module parser. */
+static int exec_image(const uint8_t *buf, size_t size, const vc_module *m,
+                      vm_image *img) {
+    for (int i = 0; i < m->phdr_count; i++) {
+        if (!(m->phdr[i].flags & 1)) continue;
+        if (m->phdr[i].filesz == 0) continue;
+        if ((uint64_t)m->phdr[i].offset + m->phdr[i].filesz > size) continue;
+        img->data      = buf;
+        img->size      = size;
+        img->seg_file  = m->phdr[i].offset;
+        img->seg_vaddr = m->phdr[i].vaddr;
+        img->seg_len   = m->phdr[i].filesz;
+        return 1;
+    }
+    return 0;
+}
+
+static int load_module(const char *path, uint8_t **buf, size_t *size,
+                       vc_module *vc, vm_image *img, vm_module *vm) {
+    *buf = slurp(path, size);
+    if (!*buf) { fprintf(stderr, "armrecomp: cannot read %s\n", path); return 0; }
+
+    char err[256];
+    if (vc_parse(*buf, *size, vc, err, sizeof(err))) {
+        fprintf(stderr, "armrecomp: %s\n", err);
+        free(*buf); return 0;
+    }
+    if (vc->kind == VC_SELF) {
+        fprintf(stderr, "armrecomp: this is a SELF; run `extract` first\n");
+        free(*buf); return 0;
+    }
+    if (!exec_image(*buf, *size, vc, img)) {
+        fprintf(stderr, "armrecomp: no executable segment found\n");
+        free(*buf); return 0;
+    }
+    if (vm_parse(img, vc->elf.entry, vm, err, sizeof(err))) {
+        fprintf(stderr, "armrecomp: module info: %s\n", err);
+        free(*buf); return 0;
+    }
+    return 1;
+}
+
+static int cmd_funcs(const char *path) {
+    uint8_t *buf; size_t size;
+    vc_module vc; vm_image img; vm_module vm;
+    if (!load_module(path, &buf, &size, &vc, &img, &vm)) return 1;
+
+    printf("module:   %s\n", vm.info.name);
+    printf("  nid           0x%08X\n", vm.info.module_nid);
+    printf("  module_start  0x%08X\n", vm.info.module_start);
+    if (vm.info.module_stop != 0xFFFFFFFF)
+        printf("  module_stop   0x%08X\n", vm.info.module_stop);
+
+    printf("\nfirmware libraries needed (%u functions across %d libraries):\n",
+           vm.total_func_imports, vm.import_count);
+
+    /* Sort by function count: the libraries a bring-up has to implement first
+     * are the ones the module leans on hardest. */
+    int order[VM_MAX_IMPORTS];
+    for (int i = 0; i < vm.import_count; i++) order[i] = i;
+    for (int i = 1; i < vm.import_count; i++) {
+        int k = order[i], j = i - 1;
+        while (j >= 0 && vm.imports[order[j]].num_funcs < vm.imports[k].num_funcs) {
+            order[j + 1] = order[j]; j--;
+        }
+        order[j + 1] = k;
+    }
+
+    for (int i = 0; i < vm.import_count; i++) {
+        const vm_import *im = &vm.imports[order[i]];
+        printf("  %-32s %4u   nid 0x%08X\n",
+               im->name[0] ? im->name : "(unnamed)", im->num_funcs,
+               im->library_nid);
+    }
+
+    if (vm.import_truncated)
+        printf("\n  NOTE: import list truncated at %d entries\n", VM_MAX_IMPORTS);
+
+    free(buf);
+    return 0;
+}
+
+/* --- discover: how much of the module can we actually reach? ---------------- */
+
+static int cmd_discover(const char *path) {
+    uint8_t *buf; size_t size;
+    vc_module vc; vm_image img; vm_module vm;
+    if (!load_module(path, &buf, &size, &vc, &img, &vm)) return 1;
+
+    vf_result r;
+    if (vf_discover(&img, &vm, &r)) {
+        fprintf(stderr, "armrecomp: discovery failed (out of memory)\n");
+        free(buf);
+        return 1;
+    }
+
+    uint32_t principled = 0, heuristic = 0;
+    for (uint32_t i = 0; i < r.count; i++) {
+        if (r.funcs[i].from_heuristic) heuristic++;
+        else                           principled++;
+    }
+
+    printf("module:   %s   (%s)\n", vm.info.name,
+           vc.elf.type == VC_ET_SCE_EXEC ? "ET_SCE_EXEC, no relocations"
+                                         : "ET_SCE_RELEXEC");
+    printf("text:     %u bytes at 0x%08X\n\n", img.seg_len, img.seg_vaddr);
+
+    printf("seeds:\n");
+    printf("  module_start        %u\n", r.seeds_entry);
+    printf("  exports             %u\n", r.seeds_export);
+    printf("  call targets        %u\n", r.seeds_call);
+    printf("  pointer shape       %u  (heuristic; %u candidates rejected)\n",
+           r.seeds_shape, r.rejected_shape);
+
+    printf("\nfunctions:            %u\n", r.count);
+    printf("  from seeds          %u\n", principled);
+    printf("  from shape          %u  (heuristic)\n", heuristic);
+
+    double cov = img.seg_len ? 100.0 * r.bytes_covered / img.seg_len : 0.0;
+    printf("\ninstructions reached: %u\n", r.insns_total);
+    printf("bytes covered:        %u / %u  (%.1f%%)\n",
+           r.bytes_covered, img.seg_len, cov);
+    printf("  simd                %u  (%.2f%%)\n", r.simd_insns,
+           r.insns_total ? 100.0 * r.simd_insns / r.insns_total : 0.0);
+    printf("  indirect sites      %u  (unresolved computed transfers)\n",
+           r.indirect_sites);
+
+    printf("\nimports:              %u functions across %d libraries\n",
+           vm.total_func_imports, vm.import_count);
+
+    /* Coverage is of the whole executable segment, which contains literal
+     * pools and read-only data as well as code. 100%% is therefore not the
+     * target and would in fact indicate over-reach. */
+    printf("\nNote: coverage is over the whole executable segment, which also\n");
+    printf("holds literal pools and read-only data. 100%% is not the target.\n");
+
+    vf_free(&r);
+    free(buf);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fputs(USAGE, stderr);
         return 2;
     }
+
+    if (strcmp(argv[1], "funcs") == 0 && argc >= 3)
+        return cmd_funcs(argv[2]);
+
+    if (strcmp(argv[1], "discover") == 0 && argc >= 3)
+        return cmd_discover(argv[2]);
 
     if (strcmp(argv[1], "info") == 0 && argc >= 3)
         return cmd_info(argv[2]);

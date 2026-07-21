@@ -121,8 +121,88 @@ module can go straight to the decoder once inflated.
 - ✅ **`armrecomp cover`** — coverage, class histogram, and instruction-set
   determination over 16 modules.
 
-**Not started:** function discovery, the C emitter, the HLE layer. This is
-phase 3 of six.
+- ✅ **`.sce_module_info`, import and export tables** (`module.c`) — and with
+  them `armrecomp funcs`, which reports the HLE work list derived from the
+  module's own import table rather than guessed at.
+- ✅ **Function discovery** (`analyze.c`) — recursive descent carrying
+  instruction-set state, seeded from `module_start`, the export table, a linear
+  harvest of call targets, and prologue-filtered pointer-shape recovery.
+
+**Not started:** the C emitter, the HLE layer. This is phase 4 of six.
+
+## e_entry does not point at code
+
+The single most consequential thing found in phase 4. On Vita, `e_entry` names
+`.sce_module_info`, not an instruction. Following it as a code address on
+*Uncharted: Fight for Fortune* lands in the middle of a string table, on the
+module name `cardgame` — and every function discovered from that seed would be
+fiction.
+
+The real entry is `module_start` inside that structure, and the structure also
+names the export and import tables. This is psprecomp's "module_start is not
+the program" in a sharper form: here the ELF entry point is not even in `.text`.
+
+**Two address conventions, not one.** The `.sce_module_info` header fields
+(`export_top`, `import_top`, `module_start`) are **segment-relative offsets**.
+The pointers stored *inside* an import or export entry (`library_name`, the NID
+tables, the entry tables) are **absolute virtual addresses**. Resolving one as
+the other does not fault — it fails a bounds check and yields nothing, so the
+symptom is a table of `(unnamed)` libraries rather than an error. The two
+resolvers are kept as separate functions so the choice is explicit at every
+call site.
+
+## The HLE work list, derived
+
+```
+$ armrecomp funcs uncharted.elf
+module:   cardgame
+firmware libraries needed (524 functions across 39 libraries):
+  SceGxm                            107   nid 0xF76B66BD
+  SceLibc                            68   nid 0xBE43BB07
+  SceCommonDialog                    37   nid 0xE537816C
+  SceLibKernel                       30   nid 0xCAE9ACE6
+  SceLibm                            28   nid 0xCDAE3C7D
+  SceNgs                             25   nid 0xB01598D9
+  ...
+```
+
+`SceGxm` at 107 functions is over a fifth of everything imported — the deep end
+of phase 6, now with a number on it. Conversely the networking and trophy
+libraries total 112 functions that a single-player bring-up does not need, which
+is the same shape as psprecomp deferring WTF's ad-hoc networking.
+
+## Discovery, and what it honestly does not know
+
+```
+$ armrecomp discover uncharted.elf
+module:   cardgame   (ET_SCE_EXEC, no relocations)
+seeds:
+  call targets        52763
+  pointer shape       22288  (heuristic; 4993 candidates rejected)
+functions:            18978
+  from seeds           8764
+  from shape          10214  (heuristic)
+bytes covered:        3424148 / 5656372  (60.5%)
+  indirect sites      17970  (unresolved computed transfers)
+```
+
+Three things this does not claim:
+
+- **54% of functions come from a heuristic.** Shape recovery requires a word
+  with bit 0 set (the Thumb bit, the one genuinely reliable signal), pointing
+  into `.text`, that decodes as a function prologue. An earlier version required
+  only that it "decode as something", which rejected 45 of 27,281 candidates —
+  0.16%, meaning it was barely filtering at all. Requiring a prologue rejects
+  18%. It will still admit false positives and will miss leaf functions that
+  push nothing, so the two tiers are reported separately rather than summed.
+- **60.5% coverage is not 39.5% missed code.** The denominator is the whole
+  executable segment, which holds literal pools and read-only data. 100% would
+  indicate over-reach, not success.
+- **17,970 indirect call sites are unresolved.** These are register-form `BLX`
+  instructions whose destination is computed, and they are exactly what
+  relocation seeding would enumerate on a 2015+ module. `ET_SCE_EXEC` has no
+  relocations, so shape is all there is — which is the cost of the launch-window
+  catalogue being where the exclusives are.
 
 ## NEON is not the obstacle
 

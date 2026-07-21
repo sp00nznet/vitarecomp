@@ -51,15 +51,21 @@ Turn a SELF into a plain ELF32 on disk.
 **NEON/SIMD is 0.71–5.34%** of instructions. The vector unit is not the
 obstacle on this platform.
 
-## Phase 4 — function discovery
+## Phase 4 — function discovery ✅ (seeded; boundaries need work)
 
-- [ ] Recursive descent from the entry point and the module's export table
-- [ ] Linear harvest of `BL` targets
-- [ ] `SCE_RELA` relocation seeding — the principled way to recover stored
-      function pointers (callbacks, vtables, thread entries) that no
-      control-flow scan can see
-- [ ] Jump-table recognition
-- [ ] `armrecomp funcs` — the import list, which *is* the HLE work list
+- [x] `.sce_module_info` parsing — `e_entry` points at this structure, **not at
+      code**
+- [x] Import/export table walking; `armrecomp funcs` reports the HLE work list
+- [x] Recursive descent carrying instruction-set state, since a seed without a
+      mode is worthless
+- [x] Linear harvest of `BL`/`BLX` targets
+- [x] Pointer-shape recovery, prologue-filtered, counted separately as the
+      heuristic it is
+- [x] `armrecomp discover`
+- [ ] `SCE_RELA` relocation seeding — not applicable to `ET_SCE_EXEC` modules,
+      which is the whole launch-window catalogue, but needed for 2015+ titles
+- [ ] Jump-table recognition — 17,970 indirect call sites remain unresolved
+- [ ] Function *boundary* quality: extents currently absorb tail calls
 
 ## Phase 5 — the emitter
 

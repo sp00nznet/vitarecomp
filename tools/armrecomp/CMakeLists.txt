@@ -1,10 +1,12 @@
-# armrecomp — the toolkit CLI. No external dependencies.
+﻿# armrecomp â€” the toolkit CLI. No external dependencies.
 
 add_executable(armrecomp
     main.c
     container.c
     inflate.c
     decode.c
+    module.c
+    analyze.c
 )
 
 target_include_directories(armrecomp PRIVATE
