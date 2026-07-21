@@ -67,14 +67,21 @@ obstacle on this platform.
 - [ ] Jump-table recognition — 17,970 indirect call sites remain unresolved
 - [ ] Function *boundary* quality: extents currently absorb tail calls
 
-## Phase 5 — the emitter
+## Phase 5 — the emitter ✅
 
-- [ ] ARM → readable C, one function at a time, with the disassembly as comments
-- [ ] Conditional execution and flag semantics (ARM's `NZCV` is far more
-      pervasive than MIPS's compare-and-branch; getting carry/overflow wrong is
-      the class of bug that surfaces only in arithmetic-heavy code)
-- [ ] Anything untranslated emits a **named run-time trap**, never silence
-- [ ] Verify: generated C compiles, links against the runtime, and runs
+- [x] Full operand decoding for the 16-bit Thumb core (the phase 3 gap): shifts,
+      immediate and register ALU, high-register forms, every load/store
+      addressing mode, PUSH/POP register lists, extends, `REV`, `CBZ`/`CBNZ`,
+      `IT`
+- [x] ARM → readable C, one function at a time, with the disassembly as comments
+- [x] Conditional execution and flag semantics, in the runtime rather than
+      inlined at each site
+- [x] Literal-pool loads folded to constants at translation time
+- [x] Anything untranslated emits a **named run-time trap**, never silence
+- [x] **Verified: generated C compiles, links against the runtime, and runs**
+- [ ] 32-bit Thumb operand decoding — currently classified and trapped, which is
+      most of the remaining ~31%
+- [ ] ARM (A32) operand decoding — a small minority of this corpus
 
 ## Phase 6 — the runtime and HLE
 

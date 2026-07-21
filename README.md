@@ -128,7 +128,92 @@ module can go straight to the decoder once inflated.
   instruction-set state, seeded from `module_start`, the export table, a linear
   harvest of call targets, and prologue-filtered pointer-shape recovery.
 
-**Not started:** the C emitter, the HLE layer. This is phase 4 of six.
+- ✅ **The emitter** (`emit.c`) and the runtime (`src/`, `include/vitarecomp/`).
+  **The generated C compiles, links, and runs.**
+
+**Not started:** the HLE layer. This is phase 5 of six.
+
+## The pipeline runs end to end
+
+```
+$ armrecomp emit uncharted.elf recomp_funcs.c 100
+  functions     100
+  instructions  8827
+  translated    6114  (69.26%)
+  trapped       2713  (30.74%)
+  literals      24  folded to constants
+
+$ cmake --build build --config Release && ./gencheck
+runtime up: sp=0x81800000  bad_access=0
+lsl(1,32)=0 (ARM says 0, naive C gives 1)
+asr(0x80000000,32)=0xFFFFFFFF (ARM says all ones)
+5-3: c=1 (ARM sets carry when there is NO borrow)
+3-5: c=0
+linked ok
+```
+
+That is **SELF → ELF → decode → discover → emit → compile → link → run**, with
+no key material anywhere in it.
+
+The output is meant to be read:
+
+```c
+/* ---------------------------------------------------------------
+ * vita_func_8100B910  --  4 instructions, 8 bytes
+ * ------------------------------------------------------------- */
+void vita_func_8100B910(void) {
+    /* 8100B910  bl               */
+    vita_func_8100B918();
+    /* 8100B914  nop              */
+    /* nop */
+}
+```
+
+## Where the runtime earns its keep
+
+Every helper exists because the obvious C is **wrong**, not merely verbose:
+
+- **Shifts by ≥ 32.** C leaves them undefined; ARM defines them as zero; x86
+  masks the count to 5 bits, so the naive `v << 32` returns `v` *unchanged* —
+  the exact opposite of the right answer. Invisible until a shift amount is
+  computed rather than constant.
+- **Carry on subtraction is NOT a borrow.** ARM sets it when there is *no*
+  borrow. Getting it backwards inverts every unsigned comparison in the program.
+- **`ADC`'s carry cannot be tested with `res < a`.** With a carry in, adding
+  `0xFFFFFFFF` leaves the value unchanged while genuinely carrying, so the naive
+  test silently breaks every multi-word addition.
+- **Flag operands are captured before the destination is written**, because `rd`
+  and `rn` are frequently the same register and the flag computation needs the
+  original values.
+
+All of it is pinned by `tests/test_runtime.c`, with the expected values derived
+from the architecture's definition rather than from what the code returns.
+
+## Three bugs the compile caught that tests had not
+
+**`MOV pc, rN` was decoded as an ALU write** and emitted as `pc = r6`. That is a
+*branch*, not an assignment. It surfaced only because `cpu.h` deliberately has
+no `pc` variable, so the C refused to compile — had `pc` existed "for
+completeness", it would have built cleanly and silently run past a jump it
+should have taken.
+
+**Function extent is not function size.** The emitter first swept each
+function's extent linearly, but extent is the highest address the *flow* walk
+reached, and tail-call branches drag it across other functions. Every function
+re-emitted that whole span: **2.39 GB of C**. Flow-following instead of sweeping
+gave 133 MB and raised the translation rate, because the duplicated
+data-as-code was gone.
+
+**Being called is what makes an address a function.** Discovery gated
+registration on its "already decoded here" bitmap, so a call target another
+function's walk had wandered through never became a function — while the
+emitter still emitted a call to it. The C compiled and failed to link. Those are
+now two separate questions with two separate records.
+
+A related one, from the same link failure: the emitter now **never names a
+symbol it does not define**. Two call targets in this module land *inside the
+import table*, one of them 0x32 bytes into the first entry — data that happened
+to decode as a `BL`. They are traps now, not calls.
 
 ## e_entry does not point at code
 

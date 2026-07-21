@@ -94,6 +94,94 @@ static void test_returns(void) {
     printf("  returns, both modes            ok\n");
 }
 
+/* --- writing r15 is control flow, not arithmetic ---------------------------- */
+/*
+ * The high-register ADD/MOV group can name r15 as its destination, and doing so
+ * is a BRANCH. Classifying it as an ALU write emits an assignment where a jump
+ * belongs, and the recompiled function runs straight past a transfer it should
+ * have taken. This was caught only because the runtime has no `pc` variable, so
+ * the generated C refused to compile; with a `pc` present it would have built
+ * cleanly and been silently wrong.
+ */
+
+static void test_pc_destination(void) {
+    memset(code, 0, sizeof(code));
+
+    /* rd is (DN << 3) | rd_low, split across bits 7 and 2:0. 0x46B7 is
+     * rd = (1<<3)|7 = 15; 0x46B6 is rd = 14 and is an ordinary move to LR.
+     * The two differ by one bit, which is why the split field is worth
+     * spelling out here. */
+    put16(0, 0x46B7);                      /* mov pc, r6  (rd=15, rm=6)      */
+    arm_insn in = dec(ARM_T32, BASE);
+    assert(in.cls == A_INDIRECT);
+    assert(in.cls != A_ALU);
+
+    put16(0, 0x46B6);                      /* mov lr, r6 — rd=14, still ALU  */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_ALU && in.op == OP_MOV && in.rd == 14);
+
+    put16(0, 0x46F7);                      /* mov pc, lr                     */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_RETURN);
+
+    put16(0, 0x4487);                      /* add pc, r0  (rd=15)            */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_INDIRECT);
+
+    /* An ordinary high-register move is still arithmetic. */
+    put16(0, 0x4630);                      /* mov r0, r6                     */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_ALU && in.op == OP_MOV && in.rd == 0 && in.rm == 6);
+
+    /* CMP never writes its destination, so r15 there is a normal operand. */
+    put16(0, 0x45B7);                      /* cmp r15, r6                    */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_ALU && in.op == OP_CMP);
+
+    printf("  r15 destination is a branch    ok\n");
+}
+
+/* --- operand decoding ------------------------------------------------------- */
+
+static void test_operands(void) {
+    memset(code, 0, sizeof(code));
+
+    /* 16-bit data processing sets flags implicitly — there is no S bit. */
+    put16(0, 0x1C41);                      /* adds r1, r0, #1                */
+    arm_insn in = dec(ARM_T32, BASE);
+    assert(in.op == OP_ADD && in.rd == 1 && in.rn == 0);
+    assert(in.has_imm && in.imm == 1 && in.sets_flags);
+
+    put16(0, 0x2042);                      /* movs r0, #0x42                 */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOV && in.rd == 0 && in.imm == 0x42 && in.sets_flags);
+
+    /* Load/store immediates are scaled by the ACCESS SIZE, so the byte form is
+     * not the word form with a smaller range. */
+    put16(0, 0x6841);                      /* ldr r1, [r0, #4]               */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_LDR && in.rt == 1 && in.rn == 0 && in.imm == 4);
+
+    put16(0, 0x7841);                      /* ldrb r1, [r0, #1]              */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_LDRB && in.imm == 1);
+
+    put16(0, 0x8841);                      /* ldrh r1, [r0, #2]              */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_LDRH && in.imm == 2);
+
+    /* PUSH/POP register lists, including the extra bit for LR and PC. */
+    put16(0, 0xB570);                      /* push {r4,r5,r6,lr}             */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_PUSH && in.reglist == (0x70 | 0x4000));
+
+    put16(0, 0xBD70);                      /* pop {r4,r5,r6,pc}              */
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_POP && (in.reglist & 0x8000) && in.cls == A_RETURN);
+
+    printf("  operands                       ok\n");
+}
+
 /* --- the J1/J2 branch encoding ---------------------------------------------- */
 /*
  * The two J bits are stored XORed with the sign bit. A decoder that treats them
@@ -258,6 +346,8 @@ int main(void) {
     printf("decode:\n");
     test_thumb_width();
     test_returns();
+    test_pc_destination();
+    test_operands();
     test_bl_target();
     test_branch_targets();
     test_mode_switches();

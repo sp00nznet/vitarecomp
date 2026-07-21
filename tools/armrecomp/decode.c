@@ -33,6 +33,14 @@ const char *arm_class_name(arm_class c) {
     }
 }
 
+const char *arm_cond_name(uint8_t cond) {
+    static const char *n[16] = {
+        "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc",
+        "hi", "ls", "ge", "lt", "gt", "le", "al", "nv"
+    };
+    return n[cond & 0xF];
+}
+
 static uint32_t sign_extend(uint32_t v, int bits) {
     uint32_t m = 1u << (bits - 1);
     return (v ^ m) - m;
@@ -54,8 +62,81 @@ static void set(arm_insn *o, arm_class c, const char *m) {
 
 /* --- Thumb, 16-bit ---------------------------------------------------------- */
 
+/* The 16 data-processing operations of the 010000 group, in encoding order. */
+static const arm_op t16_dp[16] = {
+    OP_AND, OP_EOR, OP_LSL, OP_LSR, OP_ASR, OP_ADC, OP_SBC, OP_ROR,
+    OP_TST, OP_RSB, OP_CMP, OP_CMN, OP_ORR, OP_MUL, OP_BIC, OP_MVN
+};
+
+/* The eight register-offset load/store forms, in encoding order. */
+static const arm_op t16_ldst_reg[8] = {
+    OP_STR, OP_STRH, OP_STRB, OP_LDRSB, OP_LDR, OP_LDRH, OP_LDRB, OP_LDRSH
+};
+
 static void decode_t16(uint16_t h, arm_insn *o) {
     o->raw = h;
+
+    /* --- fully decoded operand forms -------------------------------------- */
+    /*
+     * These are ordered by encoding, and every one sets `op` so the emitter can
+     * translate it. Anything falling past them keeps its class but leaves
+     * op == OP_NONE and becomes a trap rather than a guess.
+     *
+     * Flag setting is the detail most easily got wrong here: 16-bit Thumb data
+     * processing sets NZCV *implicitly*, with no S bit to read. The exception
+     * is inside an IT block, where the same encodings do not. The decoder
+     * records the instruction's own behaviour; honouring IT is the emitter's
+     * job, because only it knows the surrounding context.
+     */
+
+    /* 000 op(2) imm5 rm rd — shift by immediate; op==11 is add/sub register */
+    if ((h & 0xE000) == 0x0000 && (h & 0x1800) != 0x1800) {
+        static const arm_op sh[3] = { OP_LSL, OP_LSR, OP_ASR };
+        o->op = sh[(h >> 11) & 3];
+        o->rd = h & 7;
+        o->rm = (h >> 3) & 7;
+        o->imm = (h >> 6) & 0x1F;
+        o->has_imm = 1;
+        o->sets_flags = 1;
+        set(o, A_ALU, "shift");
+        return;
+    }
+
+    /* 00011 I op rm/imm3 rn rd */
+    if ((h & 0xF800) == 0x1800) {
+        o->op = (h & 0x0200) ? OP_SUB : OP_ADD;
+        o->rd = h & 7;
+        o->rn = (h >> 3) & 7;
+        if (h & 0x0400) { o->imm = (h >> 6) & 7; o->has_imm = 1; }
+        else            { o->rm  = (h >> 6) & 7; }
+        o->sets_flags = 1;
+        set(o, A_ALU, "add/sub");
+        return;
+    }
+
+    /* 001 op(2) rd imm8 */
+    if ((h & 0xE000) == 0x2000) {
+        static const arm_op ops[4] = { OP_MOV, OP_CMP, OP_ADD, OP_SUB };
+        o->op = ops[(h >> 11) & 3];
+        o->rd = o->rn = (h >> 8) & 7;
+        o->imm = h & 0xFF;
+        o->has_imm = 1;
+        o->sets_flags = 1;
+        set(o, A_ALU, "alu imm8");
+        return;
+    }
+
+    /* 010000 op(4) rm rd — register data processing */
+    if ((h & 0xFC00) == 0x4000) {
+        o->op = t16_dp[(h >> 6) & 0xF];
+        o->rd = o->rn = h & 7;
+        o->rm = (h >> 3) & 7;
+        o->sets_flags = 1;
+        /* RSB in this group is the "negate" form: rd = 0 - rm. */
+        if (o->op == OP_RSB) { o->imm = 0; o->has_imm = 1; o->rn = o->rm; }
+        set(o, A_ALU, "alu reg");
+        return;
+    }
 
     /* 01000111 L Rm — interworking branches. These are the only 16-bit
      * instructions that can change instruction set, so they are handled before
@@ -77,6 +158,125 @@ static void decode_t16(uint16_t h, arm_insn *o) {
             set(o, A_INDIRECT, "bx");
             o->switches_mode = 1;
         }
+        o->op = (h & 0x0080) ? OP_BLX : OP_BX;
+        o->rm = rm;
+        return;
+    }
+
+    /* 010001 op(2) DN rm(4) rd(3) — high-register forms. These do NOT set
+     * flags, unlike almost everything else in 16-bit Thumb; CMP is the sole
+     * exception because comparing is all it does. */
+    if ((h & 0xFC00) == 0x4400) {
+        static const arm_op ops[3] = { OP_ADD, OP_CMP, OP_MOV };
+        int which = (h >> 8) & 3;
+        if (which < 3) {
+            int rd = ((h >> 4) & 8) | (h & 7);
+            int rm = (h >> 3) & 0xF;
+
+            /* Writing r15 is a BRANCH, not a register write. `MOV pc, rN` is
+             * an indirect jump and `ADD pc, rN` a computed one; treating either
+             * as arithmetic emits an assignment where control flow belongs, and
+             * the recompiled function then runs straight on past a jump it
+             * should have taken. `MOV pc, lr` is the plain return form. */
+            if (rd == 15 && which != 1 /* CMP never writes rd */) {
+                o->rm = rm;
+                if (which == 2 && rm == 14) { o->op = OP_BX; set(o, A_RETURN, "mov pc,lr"); }
+                else                        { o->op = OP_BX; set(o, A_INDIRECT, "mov/add pc"); }
+                return;
+            }
+
+            o->op = ops[which];
+            o->rd = o->rn = (int8_t)rd;
+            o->rm = (int8_t)rm;
+            o->sets_flags = (o->op == OP_CMP);
+            set(o, A_ALU, "add/cmp/mov hi");
+            return;
+        }
+    }
+
+    /* 01001 rt imm8 — LDR from the literal pool. The address is PC-relative
+     * with PC aligned down to a word boundary, which is why the emitter can
+     * resolve these to a constant at translation time. */
+    if ((h & 0xF800) == 0x4800) {
+        o->op = OP_LDR;
+        o->rt = (h >> 8) & 7;
+        o->rn = 15;
+        o->imm = (uint32_t)(h & 0xFF) * 4;
+        o->has_imm = 1;
+        o->mem_add = 1;
+        set(o, A_LOAD, "ldr literal");
+        return;
+    }
+
+    /* 0101 op(3) rm rn rt — register-offset load/store */
+    if ((h & 0xF000) == 0x5000) {
+        o->op = t16_ldst_reg[(h >> 9) & 7];
+        o->rt = h & 7;
+        o->rn = (h >> 3) & 7;
+        o->rm = (h >> 6) & 7;
+        o->mem_add = 1;
+        set(o, (o->op >= OP_STR) ? A_STORE : A_LOAD, "ldr/str reg");
+        return;
+    }
+
+    /* 011 B L imm5 rn rt — word/byte immediate. The immediate is scaled by the
+     * access size, so a byte form is NOT the word form with a smaller range. */
+    if ((h & 0xE000) == 0x6000) {
+        int byte = (h & 0x1000) != 0;
+        int load = (h & 0x0800) != 0;
+        o->op = byte ? (load ? OP_LDRB : OP_STRB) : (load ? OP_LDR : OP_STR);
+        o->rt = h & 7;
+        o->rn = (h >> 3) & 7;
+        o->imm = (uint32_t)((h >> 6) & 0x1F) * (byte ? 1u : 4u);
+        o->has_imm = 1;
+        o->mem_add = 1;
+        set(o, load ? A_LOAD : A_STORE, "ldr/str imm");
+        return;
+    }
+
+    /* 1000 L imm5 rn rt — halfword, scaled by 2 */
+    if ((h & 0xF000) == 0x8000) {
+        int load = (h & 0x0800) != 0;
+        o->op = load ? OP_LDRH : OP_STRH;
+        o->rt = h & 7;
+        o->rn = (h >> 3) & 7;
+        o->imm = (uint32_t)((h >> 6) & 0x1F) * 2u;
+        o->has_imm = 1;
+        o->mem_add = 1;
+        set(o, load ? A_LOAD : A_STORE, "ldrh/strh");
+        return;
+    }
+
+    /* 1001 L rt imm8 — SP-relative, scaled by 4 */
+    if ((h & 0xF000) == 0x9000) {
+        int load = (h & 0x0800) != 0;
+        o->op = load ? OP_LDR : OP_STR;
+        o->rt = (h >> 8) & 7;
+        o->rn = 13;
+        o->imm = (uint32_t)(h & 0xFF) * 4u;
+        o->has_imm = 1;
+        o->mem_add = 1;
+        set(o, load ? A_LOAD : A_STORE, "ldr/str sp");
+        return;
+    }
+
+    /* 1010 SP rd imm8 — ADR, or ADD rd, sp, #imm */
+    if ((h & 0xF000) == 0xA000) {
+        o->rd = (h >> 8) & 7;
+        o->imm = (uint32_t)(h & 0xFF) * 4u;
+        o->has_imm = 1;
+        if (h & 0x0800) { o->op = OP_ADD; o->rn = 13; set(o, A_ALU, "add sp"); }
+        else            { o->op = OP_ADR; o->rn = 15; set(o, A_ALU, "adr"); }
+        return;
+    }
+
+    /* 1100 L rn rlist — LDM / STM */
+    if ((h & 0xF000) == 0xC000) {
+        int load = (h & 0x0800) != 0;
+        o->rn = (h >> 8) & 7;
+        o->reglist = h & 0xFF;
+        o->writeback = 1;
+        set(o, load ? A_LOADM : A_STOREM, "ldm/stm");
         return;
     }
 
@@ -108,20 +308,69 @@ static void decode_t16(uint16_t h, arm_insn *o) {
             if ((h & 0xFF00) == 0xBF00) {
                 /* IT and hints share this space. IT is the one that matters:
                  * it makes up to the next four instructions conditional, which
-                 * phase 5 has to honour. It is identified here so that it is
-                 * never silently treated as a NOP. */
-                set(o, (h & 0x000F) ? A_SYS : A_NOP, (h & 0x000F) ? "it" : "nop");
+                 * the emitter has to honour. It is identified here so that it
+                 * is never silently treated as a NOP. */
+                if (h & 0x000F) {
+                    o->op = OP_IT;
+                    o->cond = (h >> 4) & 0xF;
+                    o->it_mask = h & 0xF;
+                    set(o, A_SYS, "it");
+                } else {
+                    o->op = OP_NOP;
+                    set(o, A_NOP, "nop");
+                }
+                return;
+            }
+            if ((h & 0xFF00) == 0xB000) {       /* ADD/SUB SP, #imm7*4        */
+                o->op = (h & 0x0080) ? OP_SUB : OP_ADD;
+                o->rd = o->rn = 13;
+                o->imm = (uint32_t)(h & 0x7F) * 4u;
+                o->has_imm = 1;
+                set(o, A_ALU, "add/sub sp");
+                return;
+            }
+            if ((h & 0xFF00) == 0xB200) {       /* SXTH/SXTB/UXTH/UXTB        */
+                static const arm_op ex[4] = { OP_SXTH, OP_SXTB, OP_UXTH, OP_UXTB };
+                o->op = ex[(h >> 6) & 3];
+                o->rd = h & 7;
+                o->rm = (h >> 3) & 7;
+                set(o, A_ALU, "extend");
+                return;
+            }
+            if ((h & 0xFF00) == 0xBA00 && ((h >> 6) & 3) != 1) {
+                o->op = OP_REV;
+                o->rd = h & 7;
+                o->rm = (h >> 3) & 7;
+                set(o, A_ALU, "rev");
                 return;
             }
             if ((h & 0xF600) == 0xB400) {
                 int load = (h & 0x0800) != 0;
-                /* POP with the PC in the register list is a return. */
-                if (load && (h & 0x0100)) { set(o, A_RETURN, "pop {..,pc}"); return; }
+                /* Bit 8 is the extra register: LR for PUSH, PC for POP. A POP
+                 * that restores PC is a return, and must not also be emitted as
+                 * an ordinary register load. */
+                o->reglist = h & 0xFF;
+                o->op = load ? OP_POP : OP_PUSH;
+                if (load && (h & 0x0100)) {
+                    o->reglist |= 0x8000;       /* PC */
+                    set(o, A_RETURN, "pop {..,pc}");
+                    return;
+                }
+                if (!load && (h & 0x0100)) o->reglist |= 0x4000;  /* LR */
                 set(o, load ? A_LOADM : A_STOREM, load ? "pop" : "push");
                 return;
             }
-            if ((h & 0xF500) == 0xB100) { set(o, A_BRANCH, "cbz/cbnz");
-                                          o->conditional = 1; return; }
+            if ((h & 0xF500) == 0xB100) {       /* CBZ / CBNZ                 */
+                o->op = (h & 0x0800) ? OP_CBNZ : OP_CBZ;
+                o->rn = h & 7;
+                o->conditional = 1;
+                o->has_target = 1;
+                o->target = o->addr + 4
+                          + ((((uint32_t)(h >> 9) & 1) << 6)
+                          |  (((uint32_t)(h >> 3) & 0x1F) << 1));
+                set(o, A_BRANCH, "cbz/cbnz");
+                return;
+            }
             set(o, A_ALU, "misc");
             return;
 
@@ -131,8 +380,10 @@ static void decode_t16(uint16_t h, arm_insn *o) {
 
         case 0xD: {                             /* conditional branch, svc    */
             int cond = (h >> 8) & 0xF;
-            if (cond == 0xF) { set(o, A_SYS, "svc"); return; }
+            if (cond == 0xF) { o->op = OP_SVC; set(o, A_SYS, "svc"); return; }
             if (cond == 0xE) { set(o, A_UNDEF, "udf"); return; }
+            o->op = OP_B;
+            o->cond = (uint8_t)cond;
             set(o, A_BRANCH, "b<cond>");
             o->conditional = 1;
             o->has_target = 1;
@@ -141,6 +392,8 @@ static void decode_t16(uint16_t h, arm_insn *o) {
         }
 
         case 0xE:                               /* unconditional branch       */
+            o->op = OP_B;
+            o->cond = ARM_COND_AL;
             set(o, A_BRANCH, "b");
             o->has_target = 1;
             o->target = o->addr + 4 + sign_extend(h & 0x7FF, 11) * 2;
@@ -352,6 +605,11 @@ int arm_decode(const uint8_t *code, uint32_t code_addr, uint32_t code_len,
     out->addr = addr;
     out->mode = mode;
     out->mnemonic = "?";
+    /* Registers default to "absent" rather than r0, so an emitter that reads a
+     * field the decoder never filled produces an obvious error instead of a
+     * silent reference to the wrong register. */
+    out->rd = out->rn = out->rm = out->rt = ARM_NO_REG;
+    out->cond = ARM_COND_AL;
 
     if (addr < code_addr) return 0;
     uint32_t off = addr - code_addr;

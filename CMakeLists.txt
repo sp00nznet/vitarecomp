@@ -1,9 +1,9 @@
-# vitarecomp — a static-recompilation toolkit for PlayStation Vita games.
+﻿# vitarecomp â€” a static-recompilation toolkit for PlayStation Vita games.
 #
 # This file builds two things:
-#   1. the `vitarecomp` runtime static library — what recompiled game code links
+#   1. the `vitarecomp` runtime static library â€” what recompiled game code links
 #      against (CPU state, memory, semantic helpers)
-#   2. `armrecomp` — the tool that turns a Vita module into C
+#   2. `armrecomp` â€” the tool that turns a Vita module into C
 #
 # A game repo consumes this repo as a git submodule and does:
 #     add_subdirectory(vitarecomp)
@@ -38,7 +38,9 @@ endif()
 # target_link_libraries() are stable from the start.
 
 add_library(vitarecomp STATIC
-    src/stub.c
+    src/cpu.c
+    src/mem.c
+    src/trap.c
 )
 
 target_include_directories(vitarecomp PUBLIC

@@ -10,6 +10,7 @@
 #include "decode.h"
 #include "module.h"
 #include "analyze.h"
+#include "emit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -656,6 +657,44 @@ static int cmd_discover(const char *path) {
     return 0;
 }
 
+/* --- emit: functions to C --------------------------------------------------- */
+
+static int cmd_emit(const char *path, const char *outpath, uint32_t limit) {
+    uint8_t *buf; size_t size;
+    vc_module vc; vm_image img; vm_module vm;
+    if (!load_module(path, &buf, &size, &vc, &img, &vm)) return 1;
+
+    vf_result r;
+    if (vf_discover(&img, &vm, &r)) {
+        fprintf(stderr, "armrecomp: discovery failed\n");
+        free(buf); return 1;
+    }
+
+    FILE *f = fopen(outpath, "w");
+    if (!f) {
+        fprintf(stderr, "armrecomp: cannot write %s\n", outpath);
+        vf_free(&r); free(buf); return 1;
+    }
+
+    emit_stats st;
+    em_emit(&img, &vm, &r, f, limit, &st);
+    fclose(f);
+
+    printf("wrote %s\n", outpath);
+    printf("  functions     %u\n", st.funcs);
+    printf("  instructions  %u\n", st.insns);
+    printf("  translated    %u  (%.2f%%)\n", st.translated,
+           st.insns ? 100.0 * st.translated / st.insns : 0.0);
+    printf("  trapped       %u  (%.2f%%)\n", st.trapped,
+           st.insns ? 100.0 * st.trapped / st.insns : 0.0);
+    printf("  literals      %u  folded to constants\n", st.literals);
+    printf("\nUntranslated instructions are named run-time traps, never silence.\n");
+
+    vf_free(&r);
+    free(buf);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fputs(USAGE, stderr);
@@ -667,6 +706,10 @@ int main(int argc, char **argv) {
 
     if (strcmp(argv[1], "discover") == 0 && argc >= 3)
         return cmd_discover(argv[2]);
+
+    if (strcmp(argv[1], "emit") == 0 && argc >= 4)
+        return cmd_emit(argv[2], argv[3],
+                        argc >= 5 ? (uint32_t)strtoul(argv[4], NULL, 0) : 0);
 
     if (strcmp(argv[1], "info") == 0 && argc >= 3)
         return cmd_info(argv[2]);

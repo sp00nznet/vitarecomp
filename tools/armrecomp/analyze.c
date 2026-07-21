@@ -245,13 +245,32 @@ int vf_discover(const vm_image *img, const vm_module *mod, vf_result *out) {
         }
     }
 
-    /* Drain: each unseen seed becomes a function. */
+    /* A separate registry of function ENTRIES, distinct from the map of decoded
+     * instructions.
+     *
+     * These must not be conflated. `seen` records "an instruction was decoded
+     * here" and exists to stop the walk repeating work. Whether an address is a
+     * FUNCTION is a different question, and the answer is yes whenever
+     * something calls it — even if another function's flow walk happened to
+     * wander through it first, which is common where code falls through into
+     * what is also a call target.
+     *
+     * Gating registration on `seen` meant such addresses were never registered,
+     * while the emitter still emitted calls to them: the generated C compiled
+     * and then failed to link, naming symbols that were never defined. */
+    uint8_t *fseen = (uint8_t *)calloc(out->seen_bytes, 1);
+    if (!fseen) { free(q.v); return 1; }
+
+    #define FN_MARK(a) (fseen[(((a) - base) >> 1) >> 3] |= (uint8_t)(1u << ((((a) - base) >> 1) & 7)))
+    #define FN_TEST(a) ((fseen[(((a) - base) >> 1) >> 3] >> ((((a) - base) >> 1) & 7)) & 1)
+
     uint32_t head = 0;
     while (head < q.n) {
         seed s = q.v[head++];
         if (s.addr < base || s.addr >= base + img->seg_len) continue;
-        if (seen_get(out, s.addr - base)) continue;
+        if (FN_TEST(s.addr)) continue;
 
+        FN_MARK(s.addr);
         add_func(out, s.addr, s.mode, s.heur);
         walk(img, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
     }
@@ -264,12 +283,17 @@ int vf_discover(const vm_image *img, const vm_module *mod, vf_result *out) {
     while (head < q.n) {
         seed s = q.v[head++];
         if (s.addr < base || s.addr >= base + img->seg_len) continue;
-        if (seen_get(out, s.addr - base)) continue;
+        if (FN_TEST(s.addr)) continue;
 
+        FN_MARK(s.addr);
         add_func(out, s.addr, s.mode, s.heur);
         walk(img, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
     }
 
+    #undef FN_MARK
+    #undef FN_TEST
+
+    free(fseen);
     free(q.v);
     return 0;
 }

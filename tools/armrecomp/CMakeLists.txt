@@ -7,6 +7,7 @@ add_executable(armrecomp
     decode.c
     module.c
     analyze.c
+    emit.c
 )
 
 target_include_directories(armrecomp PRIVATE

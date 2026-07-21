@@ -43,3 +43,8 @@ target_include_directories(test_decode PRIVATE
 target_compile_options(test_decode PRIVATE -UNDEBUG)
 
 add_test(NAME decode COMMAND test_decode)
+
+add_executable(test_runtime test_runtime.c)
+target_link_libraries(test_runtime PRIVATE vitarecomp)
+target_compile_options(test_runtime PRIVATE -UNDEBUG)
+add_test(NAME runtime COMMAND test_runtime)
