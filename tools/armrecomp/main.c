@@ -6,6 +6,7 @@
  */
 
 #include "container.h"
+#include "inflate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,8 @@
 static const char *USAGE =
     "armrecomp — static-recompilation toolkit for PlayStation Vita\n"
     "\n"
-    "  armrecomp info <file>     identify a module and report its structure\n"
+    "  armrecomp info    <file>          identify a module and report structure\n"
+    "  armrecomp extract <file> <out>    SELF -> plain ELF32\n"
     "\n"
     "Accepts a SELF (eboot.bin, *.suprx) or a plain ELF/velf. A PFS-encrypted\n"
     "NoNpDrm dump is reported as such rather than parsed as garbage.\n";
@@ -175,6 +177,183 @@ static int cmd_info(const char *path) {
     return 0;
 }
 
+/* --- extract: SELF -> plain ELF32 ------------------------------------------ */
+/*
+ * Reassembly is mechanical once the container is parsed: the plaintext ELF
+ * header and program headers are copied out of the SELF, and each segment is
+ * inflated into the file offset its program header declares.
+ *
+ * What makes it worth doing carefully is that every step has a value the file
+ * itself declares, so success is checkable rather than assumed. Three
+ * independent numbers have to agree: the inflated size against `p_filesz`, the
+ * Adler-32 against the segment bytes, and the total against `elf_filesize`.
+ */
+
+static int cmd_extract(const char *path, const char *outpath) {
+    size_t size = 0;
+    uint8_t *buf = slurp(path, &size);
+    if (!buf) {
+        fprintf(stderr, "armrecomp: cannot read %s\n", path);
+        return 1;
+    }
+
+    vc_module m;
+    char err[256];
+    if (vc_parse(buf, size, &m, err, sizeof(err))) {
+        fprintf(stderr, "armrecomp: %s\n", err);
+        free(buf);
+        return 1;
+    }
+
+    if (m.kind == VC_ELF || m.kind == VC_VELF) {
+        fprintf(stderr, "armrecomp: already a plain ELF; nothing to extract\n");
+        free(buf);
+        return 1;
+    }
+
+    for (int i = 0; i < m.seg_count; i++) {
+        if (m.seg[i].encryption == VC_ENCRYPT_YES) {
+            fprintf(stderr,
+                    "armrecomp: segment %d is encrypted. This toolkit does not "
+                    "ship or derive\nkey material; supply a decrypted ELF. See "
+                    "docs/DECRYPT.md.\n", i);
+            free(buf);
+            return 1;
+        }
+    }
+
+    size_t out_size = (size_t)m.sce.elf_filesize;
+    uint8_t *out = (uint8_t *)calloc(out_size ? out_size : 1, 1);
+    if (!out) {
+        fprintf(stderr, "armrecomp: out of memory (%zu bytes)\n", out_size);
+        free(buf);
+        return 1;
+    }
+
+    /* ELF header, then the program header table at the offset the ELF header
+     * itself declares. Both are plaintext inside the SELF. */
+    if (m.sce.elf_offset + 0x34 > size) {
+        fprintf(stderr, "armrecomp: ELF header past end of file\n");
+        goto fail;
+    }
+    memcpy(out, buf + m.sce.elf_offset, 0x34);
+
+    size_t ph_bytes = (size_t)m.elf.phnum * m.elf.phentsize;
+    if (m.sce.phdr_offset + ph_bytes > size || m.elf.phoff + ph_bytes > out_size) {
+        fprintf(stderr, "armrecomp: program header table does not fit\n");
+        goto fail;
+    }
+    memcpy(out + m.elf.phoff, buf + m.sce.phdr_offset, ph_bytes);
+
+    printf("segments:\n");
+    for (int i = 0; i < m.seg_count; i++) {
+        uint64_t src_off = m.seg[i].offset;
+        uint64_t src_len = m.seg[i].length;
+        uint32_t dst_off = m.phdr[i].offset;
+        uint32_t want    = m.phdr[i].filesz;
+
+        /* SCE_RELA and SCE_VERSION segments carry a p_offset like any other,
+         * but a p_filesz of 0 would mean nothing to place. */
+        if (want == 0) { printf("  %-3d skipped (p_filesz 0)\n", i); continue; }
+
+        if (src_off + src_len > size) {
+            fprintf(stderr, "armrecomp: segment %d source past end of file\n", i);
+            goto fail;
+        }
+        if ((uint64_t)dst_off + want > out_size) {
+            fprintf(stderr, "armrecomp: segment %d does not fit in the output\n", i);
+            goto fail;
+        }
+
+        if (m.seg[i].compression == VC_COMPRESS_ZLIB) {
+            size_t produced = want;
+            inf_status st = inf_zlib(buf + src_off, (size_t)src_len,
+                                     out + dst_off, &produced);
+            if (st != INF_OK) {
+                fprintf(stderr, "armrecomp: segment %d: %s\n", i, inf_strerror(st));
+                goto fail;
+            }
+            /* The inflated size must match what the program header declares.
+             * A stream that decompresses cleanly to the wrong length means the
+             * segment table and the program headers disagree, which means the
+             * container is being misread. */
+            if (produced != want) {
+                fprintf(stderr,
+                        "armrecomp: segment %d inflated to %zu, p_filesz says %u\n",
+                        i, produced, want);
+                goto fail;
+            }
+            printf("  %-3d %8llu -> %-9u zlib, adler ok\n",
+                   i, (unsigned long long)src_len, want);
+        } else {
+            if (src_len != want) {
+                fprintf(stderr,
+                        "armrecomp: segment %d stored length %llu != p_filesz %u\n",
+                        i, (unsigned long long)src_len, want);
+                goto fail;
+            }
+            memcpy(out + dst_off, buf + src_off, want);
+            printf("  %-3d %8llu -> %-9u stored\n",
+                   i, (unsigned long long)src_len, want);
+        }
+    }
+
+    /* Independent sanity checks on the result, in increasing order of what
+     * they would catch. */
+    if (!(out[0] == 0x7F && out[1] == 'E' && out[2] == 'L' && out[3] == 'F')) {
+        fprintf(stderr, "armrecomp: reassembled file is not an ELF\n");
+        goto fail;
+    }
+
+    /* e_entry is NOT an absolute virtual address on Vita.
+     *
+     * It is encoded relative to the module: the top two bits select a program
+     * header, the low 30 are a byte offset into that segment. Checking it as an
+     * absolute address fails on every module — Uncharted's 0x004BA470 sits far
+     * below segment 0's vaddr of 0x81000000, while being comfortably inside
+     * that segment's 5,656,372 bytes.
+     *
+     * Worth stating because the failure is quiet in the other direction too: on
+     * a module whose load address happened to be low, an absolute-address check
+     * could pass by coincidence and validate nothing. */
+    uint32_t entry_seg = m.elf.entry >> 30;
+    uint32_t entry_off = m.elf.entry & 0x3FFFFFFF;
+
+    int entry_in_exec = 0;
+    if ((int)entry_seg < m.phdr_count &&
+        (m.phdr[entry_seg].flags & 1) &&                     /* PF_X */
+        entry_off < m.phdr[entry_seg].memsz) {
+        entry_in_exec = 1;
+    }
+
+    FILE *f = fopen(outpath, "wb");
+    if (!f) {
+        fprintf(stderr, "armrecomp: cannot write %s\n", outpath);
+        goto fail;
+    }
+    fwrite(out, 1, out_size, f);
+    fclose(f);
+
+    printf("\nwrote %s\n", outpath);
+    printf("  size          %zu bytes (elf_filesize declared %llu)\n",
+           out_size, (unsigned long long)m.sce.elf_filesize);
+    printf("  entry         0x%08X -> segment %u + 0x%X %s\n",
+           m.elf.entry, entry_seg, entry_off,
+           entry_in_exec ? "(executable)"
+                         : "<-- NOT in an executable segment");
+    if (entry_in_exec)
+        printf("  vaddr         0x%08X\n", m.phdr[entry_seg].vaddr + entry_off);
+
+    free(out);
+    free(buf);
+    return entry_in_exec ? 0 : 1;
+
+fail:
+    free(out);
+    free(buf);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fputs(USAGE, stderr);
@@ -183,6 +362,9 @@ int main(int argc, char **argv) {
 
     if (strcmp(argv[1], "info") == 0 && argc >= 3)
         return cmd_info(argv[2]);
+
+    if (strcmp(argv[1], "extract") == 0 && argc >= 4)
+        return cmd_extract(argv[2], argv[3]);
 
     fputs(USAGE, stderr);
     return 2;

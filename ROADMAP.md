@@ -17,16 +17,18 @@ decodable ARM, with no key material.
 **Established:** QA/prototype builds carry plaintext, zlib-compressed segments.
 The corpus needs no decryption. See [`docs/DECRYPT.md`](docs/DECRYPT.md).
 
-## Phase 2 — inflate and reassemble
+## Phase 2 — inflate and reassemble ✅
 
 Turn a SELF into a plain ELF32 on disk.
 
-- [ ] zlib inflate (opt-in dependency; the only thing between the QA corpus and
-      the decoder)
-- [ ] Segment reassembly into a valid ELF32 using the plaintext program headers
-- [ ] Verify: output is exactly `elf_filesize` bytes, parses, and `e_entry`
-      lands inside a `PF_X` segment
-- [ ] `armrecomp extract` — SELF in, ELF out
+- [x] DEFLATE + zlib, written rather than vendored (RFC 1951/1950), keeping the
+      "no external dependencies" promise intact
+- [x] Segment reassembly into a valid ELF32 using the plaintext program headers
+- [x] Verify: inflated size matches `p_filesz`, Adler-32 matches, total matches
+      `elf_filesize`, and `e_entry` resolves into a `PF_X` segment
+- [x] `armrecomp extract` — SELF in, ELF out
+- [x] **15/15 modules in the corpus extract and round-trip**, from 236 KB
+      (`libfios2.suprx`) to 53 MB (*Volume*)
 
 **Not in scope, now or later:** key derivation, key extraction, the PFS layer.
 

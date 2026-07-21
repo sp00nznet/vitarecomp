@@ -17,3 +17,16 @@ target_include_directories(test_container PRIVATE
 target_compile_options(test_container PRIVATE -UNDEBUG)
 
 add_test(NAME container COMMAND test_container)
+
+add_executable(test_inflate
+    test_inflate.c
+    ${CMAKE_SOURCE_DIR}/tools/armrecomp/inflate.c
+)
+
+target_include_directories(test_inflate PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools/armrecomp
+)
+
+target_compile_options(test_inflate PRIVATE -UNDEBUG)
+
+add_test(NAME inflate COMMAND test_inflate)

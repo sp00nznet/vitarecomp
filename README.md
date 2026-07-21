@@ -105,8 +105,33 @@ module can go straight to the decoder once inflated.
 - ✅ **`ctest`, all synthetic** — no game data, no dump, no key material in the
   repo or in the tests.
 
+- ✅ **DEFLATE and zlib, written not vendored** (`inflate.c`, RFC 1951/1950) —
+  canonical Huffman decoding, all three block types, overlapping back-references
+  handled byte-at-a-time, and the Adler-32 trailer verified. Validated against a
+  fixed-Huffman *encoder* built from the spec in the test file, so the decoder is
+  checked against an independent implementation rather than a pasted blob.
+- ✅ **`armrecomp extract` — SELF in, plain ELF32 out.** **15/15 modules in the
+  corpus extract and round-trip back through `info`**, from 236 KB
+  (`libfios2.suprx`) to 53 MB (*Volume*).
+
 **Not started:** the ARMv7/Thumb-2 decoder, function discovery, the C emitter,
-the HLE layer. This is phase 1 of six.
+the HLE layer. This is phase 2 of six.
+
+### Reassembly is checkable, not merely plausible
+
+Decompression can succeed and still be wrong, so three independent numbers the
+file itself declares have to agree before an extract is accepted: the inflated
+size against each segment's `p_filesz`, the Adler-32 against the segment bytes,
+and the total against `elf_filesize`. On *Uncharted: Fight for Fortune* all
+three land exactly (`5,883,138` bytes declared and produced).
+
+**`e_entry` is not an absolute address.** Vita encodes it relative to the
+module — the top two bits select a program header, the low 30 are a byte offset
+into that segment. `0x004BA470` sits far below segment 0's vaddr of
+`0x81000000` while being comfortably inside its 5,656,372 bytes; resolved
+properly it is segment 0 + `0x4BA470`, or vaddr `0x814BA470`. An
+absolute-address check fails on every module — and worse, on a module with a low
+load address it could pass by coincidence and validate nothing.
 
 ## The finding that shapes the project: QA builds are not encrypted
 

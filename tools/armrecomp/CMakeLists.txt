@@ -3,6 +3,7 @@
 add_executable(armrecomp
     main.c
     container.c
+    inflate.c
 )
 
 target_include_directories(armrecomp PRIVATE
