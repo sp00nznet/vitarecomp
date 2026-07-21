@@ -10,6 +10,7 @@
 #include "module.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint16_t r16(const uint8_t *p) {
@@ -19,6 +20,11 @@ static uint16_t r16(const uint8_t *p) {
 static uint32_t r32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
          | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static int stub_cmp(const void *a, const void *b) {
+    uint32_t x = ((const vm_stub *)a)->addr, y = ((const vm_stub *)b)->addr;
+    return x < y ? -1 : x > y ? 1 : 0;
 }
 
 static int fail(char *err, size_t errsz, const char *msg) {
@@ -151,5 +157,60 @@ int vm_parse(const vm_image *img, uint32_t entry, vm_module *out,
         p += size;
     }
 
+    /* --- the stub table --------------------------------------------------- */
+    /*
+     * The NID table and the entry table are parallel arrays: entry k of one
+     * names the function, entry k of the other gives the address of the stub
+     * that calls it. Pairing them is what lets the emitter turn a BL into a
+     * named firmware call.
+     *
+     * Stub addresses carry the Thumb bit, since they are branch destinations.
+     * It is cleared here so lookups compare against the same value the decoder
+     * produces for a branch target.
+     */
+    if (out->total_func_imports) {
+        out->stubs = (vm_stub *)calloc(out->total_func_imports, sizeof(vm_stub));
+        if (!out->stubs) return fail(err, errsz, "out of memory");
+
+        for (int i = 0; i < out->import_count; i++) {
+            const vm_import *im = &out->imports[i];
+            const uint8_t *nt = vm_va(img, im->func_nid_table,
+                                      (uint32_t)im->num_funcs * 4);
+            const uint8_t *et = vm_va(img, im->func_entry_table,
+                                      (uint32_t)im->num_funcs * 4);
+            if (!nt || !et) continue;
+
+            for (uint32_t k = 0; k < im->num_funcs; k++) {
+                if (out->stub_count >= out->total_func_imports) break;
+                vm_stub *s = &out->stubs[out->stub_count];
+                s->lib_nid  = im->library_nid;
+                s->func_nid = r32(nt + k * 4);
+                s->addr     = r32(et + k * 4) & ~1u;
+                out->stub_count++;
+            }
+        }
+
+        qsort(out->stubs, out->stub_count, sizeof(vm_stub), stub_cmp);
+    }
+
     return 0;
+}
+
+void vm_free(vm_module *m) {
+    if (!m) return;
+    free(m->stubs);
+    m->stubs = NULL;
+    m->stub_count = 0;
+}
+
+const vm_stub *vm_find_stub(const vm_module *m, uint32_t addr) {
+    if (!m || !m->stubs) return NULL;
+    uint32_t lo = 0, hi = m->stub_count;
+    addr &= ~1u;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (m->stubs[mid].addr == addr) return &m->stubs[mid];
+        if (m->stubs[mid].addr <  addr) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
 }

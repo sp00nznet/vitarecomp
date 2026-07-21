@@ -55,6 +55,20 @@ typedef struct {
     uint32_t func_entry_table;
 } vm_import;
 
+/* One imported function, at the address the module actually calls.
+ *
+ * A module never calls firmware directly. It calls a STUB inside its own .text,
+ * which the loader patches at load time to reach the real function. So the
+ * recompiler sees an ordinary BL to an ordinary address, and the only way to
+ * know that address means "SceGxmDraw" rather than "some function of ours" is
+ * this table. Without it every firmware call looks like an internal call to a
+ * function whose body is a placeholder the loader was supposed to overwrite. */
+typedef struct {
+    uint32_t addr;        /* stub address in .text, Thumb bit cleared */
+    uint32_t lib_nid;
+    uint32_t func_nid;
+} vm_stub;
+
 #define VM_MAX_IMPORTS 256
 
 typedef struct {
@@ -64,7 +78,15 @@ typedef struct {
     int            import_count;
     int            import_truncated;   /* more than VM_MAX_IMPORTS present */
     uint32_t       total_func_imports;
+
+    vm_stub       *stubs;              /* sorted by addr; free with vm_free() */
+    uint32_t       stub_count;
 } vm_module;
+
+void vm_free(vm_module *m);
+
+/* Look up a call target. Returns NULL when the address is not an import stub. */
+const vm_stub *vm_find_stub(const vm_module *m, uint32_t addr);
 
 /* Parse the module info at `entry` (the raw e_entry value; the segment index in
  * its top two bits is honoured). Returns 0 on success. */

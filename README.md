@@ -537,6 +537,44 @@ work is roughly 15 functions: GXP reflection, the scene pipeline, and the GXP
 shader translator, which is a compiler in its own right. See
 [`docs/HLE.md`](docs/HLE.md).
 
+## Imports are bound, so firmware calls say what they are
+
+A module never calls firmware directly. It calls a **stub** inside its own
+`.text` that the loader patches at load time, so the recompiler sees an ordinary
+`BL` to an ordinary address. Left unbound, every firmware call looks like an
+internal call to a function whose body is placeholder filler — and recompiling
+that filler would translate it and then "return" into whatever it happened to
+be.
+
+Pairing the import NID table with the entry table gives the stub address for
+each function, so calls bind at emit time:
+
+```
+$ armrecomp emit uncharted.elf recomp_funcs.c 100 path/to/vita-headers/db/360
+  translated    6161  (69.80%)
+  import calls    49  bound to firmware
+
+wrote recomp_funcs_imports.c
+  524 import stubs, each trapping by name
+```
+
+```c
+void vita_hle_sceGxmMapFragmentUsseMemory(void);
+```
+
+and in the companion file, one default per import:
+
+```c
+/* SceRtcUser::sceRtcGetCurrentTick  stub 0x814B83D0 */
+void vita_hle_sceRtcGetCurrentTick(void) { vita_trap_import(0x814B83D0, 0x23F79274); }
+```
+
+That is what makes the HLE **incrementally implementable**. The generated C
+links from the first build, and an unimplemented firmware call names exactly
+which function the game wanted — rather than failing to link, or silently
+returning zero. Implementing one means removing its stub and providing a real
+body in the link.
+
 ## Why the HLE is written rather than borrowed
 
 Vita3K is **GPLv2** — its README attributes the choice to *"external

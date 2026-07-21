@@ -694,10 +694,19 @@ static int cmd_discover(const char *path) {
 
 /* --- emit: functions to C --------------------------------------------------- */
 
-static int cmd_emit(const char *path, const char *outpath, uint32_t limit) {
+static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
+                    const char *dbdir) {
     uint8_t *buf; size_t size;
     vc_module vc; vm_image img; vm_module vm;
     if (!load_module(path, &buf, &size, &vc, &img, &vm)) return 1;
+
+    nid_db *db = NULL;
+    if (dbdir) {
+        int files = 0, entries = 0;
+        db = nid_db_load(dbdir, &files, &entries);
+        if (!db) fprintf(stderr, "armrecomp: cannot read NID db at %s "
+                                 "(imports will be named by NID)\n", dbdir);
+    }
 
     vf_result r;
     if (vf_discover(&img, &vm, &r)) {
@@ -711,9 +720,22 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit) {
         vf_free(&r); free(buf); return 1;
     }
 
+    /* The import stubs go in their own file beside the functions, so the two
+     * can be regenerated independently and an implemented import is removed
+     * from one place. */
+    char imppath[1024];
+    snprintf(imppath, sizeof(imppath), "%s", outpath);
+    char *dot = strrchr(imppath, '.');
+    if (dot) *dot = '\0';
+    strncat(imppath, "_imports.c", sizeof(imppath) - strlen(imppath) - 1);
+
+    FILE *impf = fopen(imppath, "w");
+    if (!impf) fprintf(stderr, "armrecomp: cannot write %s\n", imppath);
+
     emit_stats st;
-    em_emit(&img, &vm, &r, f, limit, &st);
+    em_emit(&img, &vm, db, &r, f, impf, limit, &st);
     fclose(f);
+    if (impf) fclose(impf);
 
     printf("wrote %s\n", outpath);
     printf("  functions     %u\n", st.funcs);
@@ -723,8 +745,14 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit) {
     printf("  trapped       %u  (%.2f%%)\n", st.trapped,
            st.insns ? 100.0 * st.trapped / st.insns : 0.0);
     printf("  literals      %u  folded to constants\n", st.literals);
+    printf("  import calls  %u  bound to firmware\n", st.import_calls);
+    if (impf)
+        printf("\nwrote %s\n  %u import stubs, each trapping by name\n",
+               imppath, st.imports_used);
     printf("\nUntranslated instructions are named run-time traps, never silence.\n");
 
+    nid_db_free(db);
+    vm_free(&vm);
     vf_free(&r);
     free(buf);
     return 0;
@@ -744,7 +772,8 @@ int main(int argc, char **argv) {
 
     if (strcmp(argv[1], "emit") == 0 && argc >= 4)
         return cmd_emit(argv[2], argv[3],
-                        argc >= 5 ? (uint32_t)strtoul(argv[4], NULL, 0) : 0);
+                        argc >= 5 ? (uint32_t)strtoul(argv[4], NULL, 0) : 0,
+                        argc >= 6 ? argv[5] : NULL);
 
     if (strcmp(argv[1], "info") == 0 && argc >= 3)
         return cmd_info(argv[2]);

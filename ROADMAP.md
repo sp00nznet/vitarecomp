@@ -89,7 +89,10 @@ obstacle on this platform.
 - [x] **NID resolution against the MIT `vita-headers` database** — 519 of 524
       imports resolved (99.0%) from 9,274 known functions
 - [x] The HLE work list sized and shaped: see [`docs/HLE.md`](docs/HLE.md)
-- [ ] Bind imports into a NID-keyed dispatch table
+- [x] **Bind imports.** A call to a stub emits `vita_hle_sceGxmDraw()` rather
+      than `vita_func_814BB75C()`, and a generated companion file gives every
+      import a default that traps by name — so the output links from the first
+      build and each firmware call announces itself
 - [ ] The shallow ~92 of `SceGxm`: state setters, texture accessors, mapping
 - [ ] `SceLibc` / `SceLibm` (96 functions), largely host-forwardable
 - [ ] `sceKernel` — threads, memory blocks, sync primitives

@@ -242,7 +242,22 @@ static void trap(FILE *f, const arm_insn *in, const char *why) {
 }
 
 /* Returns 1 if real C was emitted, 0 if a trap was. */
-static int emit_insn(const vm_image *img, const funcset *fs, const fbody *b,
+/* The C symbol for an imported firmware function.
+ *
+ * The resolved name is used when the database knows it, because the whole point
+ * of binding imports is that the generated C says `vita_hle_sceGxmDraw()` where
+ * it would otherwise say `vita_func_814BB75C()` and leave the reader to work
+ * out that the callee is not ours at all. An unresolved NID still gets a stable
+ * symbol so the output links either way. */
+static void hle_symbol(char *dst, size_t cap, const nid_db *db,
+                       const vm_stub *s) {
+    const char *n = nid_func_name(db, s->lib_nid, s->func_nid);
+    if (n) snprintf(dst, cap, "vita_hle_%s", n);
+    else   snprintf(dst, cap, "vita_hle_nid_%08X", s->func_nid);
+}
+
+static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db,
+                     const funcset *fs, const fbody *b,
                      const arm_insn *in, FILE *f, emit_stats *st) {
     char o2[64], addr[64], rn_s[32];
 
@@ -251,6 +266,23 @@ static int emit_insn(const vm_image *img, const funcset *fs, const fbody *b,
      * get inconsistently wrong when repeated. */
     reg_operand(rn_s, sizeof(rn_s),
                 in->rn == ARM_NO_REG ? in->rd : in->rn, in);
+
+    /* A call whose target is an import stub is a firmware call, and must be
+     * bound before anything else looks at it. Otherwise it decodes as an
+     * ordinary call to an ordinary address — the stub body is a placeholder the
+     * loader overwrites at load time, so recompiling it would translate filler
+     * and then "return" into whatever the filler happened to be. */
+    if ((in->cls == A_CALL || in->cls == A_BRANCH) && in->has_target) {
+        const vm_stub *s = vm_find_stub(mod, in->target);
+        if (s) {
+            char sym[96];
+            hle_symbol(sym, sizeof(sym), db, s);
+            if (in->cls == A_CALL) fprintf(f, "    %s();\n", sym);
+            else                   fprintf(f, "    %s(); return;\n", sym);  /* tail call */
+            st->import_calls++;
+            return 1;
+        }
+    }
 
     /* An instruction made conditional by an IT block, or a conditional branch,
      * is wrapped rather than translated differently. Getting this wrong is
@@ -515,8 +547,9 @@ static int emit_insn(const vm_image *img, const funcset *fs, const fbody *b,
 
 /* --- the whole module -------------------------------------------------------- */
 
-int em_emit(const vm_image *img, const vm_module *mod, const vf_result *disc,
-            FILE *f, uint32_t limit, emit_stats *st) {
+int em_emit(const vm_image *img, const vm_module *mod, const nid_db *db,
+            const vf_result *disc, FILE *f, FILE *impf,
+            uint32_t limit, emit_stats *st) {
     memset(st, 0, sizeof(*st));
 
     uint32_t n_funcs = disc->count;
@@ -538,6 +571,20 @@ int em_emit(const vm_image *img, const vm_module *mod, const vf_result *disc,
     fprintf(f, " * %u functions\n", disc->count);
     fprintf(f, " */\n\n");
     fprintf(f, "#include \"vitarecomp/recomp_rt.h\"\n\n");
+
+    /* Declare every import the module could call. Emitting these unconditionally
+     * — rather than only the ones a limited emit happens to reach — keeps the
+     * declaration set stable, so adding functions to the emit does not change
+     * which symbols exist. */
+    if (mod->stub_count) {
+        fprintf(f, "/* firmware imports */\n");
+        for (uint32_t i = 0; i < mod->stub_count; i++) {
+            char sym[96];
+            hle_symbol(sym, sizeof(sym), db, &mod->stubs[i]);
+            fprintf(f, "void %s(void);\n", sym);
+        }
+        fprintf(f, "\n");
+    }
 
     /* Forward declarations: the call graph has cycles, so every function must
      * be visible before any body is emitted. */
@@ -575,7 +622,7 @@ int em_emit(const vm_image *img, const vm_module *mod, const vf_result *disc,
                 fprintf(f, "L_%08X:\n", in->addr);
 
             fprintf(f, "    /* %08X  %-16s */\n", in->addr, in->mnemonic);
-            if (emit_insn(img, &fs, &b, in, f, st)) st->translated++;
+            if (emit_insn(img, mod, db, &fs, &b, in, f, st)) st->translated++;
             else                               st->trapped++;
             st->insns++;
         }
@@ -585,6 +632,42 @@ int em_emit(const vm_image *img, const vm_module *mod, const vf_result *disc,
 
         free(b.v);
         free(b.labels);
+    }
+
+    /* --- the HLE stub file --------------------------------------------------
+     *
+     * One default implementation per import, each of which traps by name. This
+     * is what makes the HLE incrementally implementable: the generated C links
+     * from the first build, and every unimplemented firmware call announces
+     * exactly which function the game wanted rather than failing to link or,
+     * worse, silently returning zero.
+     *
+     * Implementing one means deleting its stub from here and providing a real
+     * body elsewhere in the link.
+     */
+    if (impf) {
+        fprintf(impf, "/* Generated by armrecomp. Do not edit.\n");
+        fprintf(impf, " *\n");
+        fprintf(impf, " * Default firmware imports for module '%s': %u functions.\n",
+                mod->info.name, mod->stub_count);
+        fprintf(impf, " * Each traps by name. Replace one by removing it here and\n");
+        fprintf(impf, " * providing a real implementation in the link.\n");
+        fprintf(impf, " */\n\n");
+        fprintf(impf, "#include \"vitarecomp/recomp_rt.h\"\n\n");
+
+        for (uint32_t i = 0; i < mod->stub_count; i++) {
+            const vm_stub *s = &mod->stubs[i];
+            char sym[96];
+            hle_symbol(sym, sizeof(sym), db, s);
+            const char *lib = nid_lib_name(db, s->lib_nid);
+            const char *fn  = nid_func_name(db, s->lib_nid, s->func_nid);
+
+            fprintf(impf, "/* %s::%s  stub 0x%08X */\n",
+                    lib ? lib : "?", fn ? fn : "(unresolved)", s->addr);
+            fprintf(impf, "void %s(void) { vita_trap_import(0x%08X, 0x%08X); }\n\n",
+                    sym, s->addr, s->func_nid);
+        }
+        st->imports_used = mod->stub_count;
     }
 
     free(fs.v);
