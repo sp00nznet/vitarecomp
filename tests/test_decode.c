@@ -141,6 +141,110 @@ static void test_pc_destination(void) {
     printf("  r15 destination is a branch    ok\n");
 }
 
+/* --- ThumbExpandImm --------------------------------------------------------- */
+/*
+ * Two encodings share one 12-bit field, and the naive "it is just a 12-bit
+ * integer" reading is correct for small constants and wrong for everything
+ * else — which is exactly the shape of bug that survives casual testing. Each
+ * case is checked against a value worked out from the definition.
+ */
+
+static void test_thumb_expand_imm(void) {
+    memset(code, 0, sizeof(code));
+
+    /* mov.w rd, #imm — 0xF04F is ORR with rn=15, which is MOV. */
+
+    /* Pattern 00: the byte, unchanged. */
+    put16(0, 0xF04F); put16(2, 0x0042);
+    arm_insn in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOV && in.has_imm && in.imm == 0x42);
+
+    /* Pattern 01: byte replicated into halves -> 0x00XY00XY. */
+    put16(0, 0xF04F); put16(2, 0x1042);
+    in = dec(ARM_T32, BASE);
+    assert(in.imm == 0x00420042u);
+
+    /* Pattern 10: byte replicated, shifted up -> 0xXY00XY00. */
+    put16(0, 0xF04F); put16(2, 0x2042);
+    in = dec(ARM_T32, BASE);
+    assert(in.imm == 0x42004200u);
+
+    /* Pattern 11: byte in all four positions. */
+    put16(0, 0xF04F); put16(2, 0x3042);
+    in = dec(ARM_T32, BASE);
+    assert(in.imm == 0x42424242u);
+
+    /* The rotate form. The stored 7 bits carry an implicit leading 1, so the
+     * value rotated is 0x80|imm7, not imm7 — the single easiest thing here to
+     * get wrong, and it leaves every such constant short by 0x80.
+     *
+     * i:imm3:a = 01000 gives a rotate of 8 applied to 0x80: 0x80000000. */
+    put16(0, 0xF04F); put16(2, 0x4000);
+    in = dec(ARM_T32, BASE);
+    assert(in.imm == 0x80000000u);
+
+    printf("  thumb expand immediate         ok\n");
+}
+
+/* --- 32-bit Thumb operands -------------------------------------------------- */
+
+static void test_t32_operands(void) {
+    memset(code, 0, sizeof(code));
+
+    /* add.w r0, r1, r2 */
+    put16(0, 0xEB01); put16(2, 0x0002);
+    arm_insn in = dec(ARM_T32, BASE);
+    assert(in.width == 4 && in.op == OP_ADD);
+    assert(in.rd == 0 && in.rn == 1 && in.rm == 2 && !in.sets_flags);
+
+    /* adds.w r0, r1, r2 — the S bit is bit 4 of the first halfword. */
+    put16(0, 0xEB11); put16(2, 0x0002);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_ADD && in.sets_flags);
+
+    /* orr.w with rn == 15 is MOV, not a real ORR against r15. */
+    put16(0, 0xEA4F); put16(2, 0x0001);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOV && in.rn == ARM_NO_REG && in.rm == 1);
+
+    /* sub.w with rd == 15 and S set is CMP: flags only, no destination. */
+    put16(0, 0xEBB1); put16(2, 0x0F02);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_CMP && in.rd == ARM_NO_REG);
+
+    /* movw r0, #0x1234 — a plain 16-bit literal, not a modified immediate. */
+    put16(0, 0xF241); put16(2, 0x2034);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOV && in.imm == 0x1234);
+
+    /* ldr.w r0, [r1, #0x100] — 12-bit unsigned offset form. */
+    put16(0, 0xF8D1); put16(2, 0x0100);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_LDR && in.rt == 0 && in.rn == 1 && in.imm == 0x100);
+
+    /* str.w r0, [r1, #0x100] */
+    put16(0, 0xF8C1); put16(2, 0x0100);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_STR && in.rt == 0 && in.rn == 1);
+
+    /* mul.w r0, r1, r2 — ra == 15 distinguishes it from MLA. */
+    put16(0, 0xFB01); put16(2, 0xF002);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MUL && in.rd == 0 && in.rn == 1 && in.rm == 2);
+
+    /* push.w {r4,lr} / pop.w — only the SP-relative forms translate as stack
+     * operations; an LDM against another base must not. */
+    put16(0, 0xE92D); put16(2, 0x4010);
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_STOREM && in.op == OP_PUSH && in.rn == 13);
+
+    put16(0, 0xE8B1); put16(2, 0x0030);      /* ldm r1!, {r4,r5} — base r1 */
+    in = dec(ARM_T32, BASE);
+    assert(in.cls == A_LOADM && in.op == OP_NONE);
+
+    printf("  32-bit thumb operands          ok\n");
+}
+
 /* --- operand decoding ------------------------------------------------------- */
 
 static void test_operands(void) {
@@ -348,6 +452,8 @@ int main(void) {
     test_returns();
     test_pc_destination();
     test_operands();
+    test_thumb_expand_imm();
+    test_t32_operands();
     test_bl_target();
     test_branch_targets();
     test_mode_switches();

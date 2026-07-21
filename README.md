@@ -136,12 +136,13 @@ module can go straight to the decoder once inflated.
 ## The pipeline runs end to end
 
 ```
-$ armrecomp emit uncharted.elf recomp_funcs.c 100
+$ armrecomp emit uncharted.elf recomp_funcs.c 100 path/to/vita-headers/db/360
   functions     100
   instructions  8827
-  translated    6114  (69.26%)
-  trapped       2713  (30.74%)
+  translated    7607  (86.18%)
+  trapped       1220  (13.82%)
   literals      24  folded to constants
+  import calls  49  bound to firmware
 
 $ cmake --build build --config Release && ./gencheck
 runtime up: sp=0x81800000  bad_access=0
@@ -168,6 +169,37 @@ void vita_func_8100B910(void) {
     /* nop */
 }
 ```
+
+## ThumbExpandImm, and why it is worth a test
+
+32-bit Thumb encodes a 32-bit constant in twelve bits, and **two entirely
+different encodings share the field**, selected by its top two bits. Clear, and
+the low byte is replicated into a pattern; otherwise the field is a
+rotate-right of a value whose top bit is implicit and always set.
+
+Reading it as a plain 12-bit integer is the obvious mistake and a quiet one:
+small constants land in the first case with pattern `00`, where the naive
+reading is *correct*. Everything above `0xFF` is then wrong. The implicit top
+bit is the other trap — forgetting it leaves every rotated constant short by
+`0x80`.
+
+Two more that only a test catches, both found that way here:
+
+- **The immediate/register split is not a single bit.** `0xEA`/`0xEB` and
+  `0xF0`/`0xF1` both have bit 15 set, so testing it classifies every
+  shifted-register instruction as an immediate one and reads operand 2 from the
+  wrong fields.
+- **`MOVW` sets bit 6**, so a group mask that keeps that bit excludes `MOVW`
+  from its own group entirely.
+
+Four operations also change identity when a register field is `r15`, which the
+architecture uses instead of spending encoding space: `rn == 15` turns `ORR`
+into `MOV` and `ORN` into `MVN`; `rd == 15` with `S` set turns
+`AND`/`EOR`/`ADD`/`SUB` into `TST`/`TEQ`/`CMN`/`CMP`.
+
+`MOVT` is decoded but deliberately **not** translated — it writes only the top
+half and preserves the bottom, so emitting it as a move would silently discard
+the low 16 bits the preceding `MOVW` just set.
 
 ## Where the runtime earns its keep
 

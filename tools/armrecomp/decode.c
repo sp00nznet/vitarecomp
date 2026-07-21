@@ -407,6 +407,33 @@ static void decode_t16(uint16_t h, arm_insn *o) {
 
 /* --- Thumb, 32-bit ---------------------------------------------------------- */
 
+/* ThumbExpandImm — the 12-bit field that encodes a 32-bit constant.
+ *
+ * Two entirely different encodings share the field, selected by its top two
+ * bits. With them clear, the low byte is replicated into a pattern (once,
+ * halfword-spaced, byte-spaced, or all four); otherwise the field is a
+ * rotate-right of a value whose top bit is implicit and always set.
+ *
+ * Reading it as a plain 12-bit integer is the obvious mistake, and it is quiet:
+ * small constants happen to be in the first case with pattern 00, where the
+ * naive reading is correct. Everything above 0xFF is then wrong. */
+static uint32_t thumb_expand_imm(uint32_t imm12) {
+    if ((imm12 & 0xC00) == 0) {
+        uint32_t b = imm12 & 0xFF;
+        switch ((imm12 >> 8) & 3) {
+            case 0:  return b;
+            case 1:  return (b << 16) | b;
+            case 2:  return (b << 24) | (b << 8);
+            default: return (b << 24) | (b << 16) | (b << 8) | b;
+        }
+    }
+    /* The 8-bit value always has bit 7 set implicitly, so only 7 bits are
+     * stored. Forgetting that leaves every rotated constant short by 0x80. */
+    uint32_t v = 0x80u | (imm12 & 0x7F);
+    uint32_t r = (imm12 >> 7) & 0x1F;
+    return r ? ((v >> r) | (v << (32 - r))) : v;
+}
+
 static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
     o->raw = ((uint32_t)h1 << 16) | h2;
 
@@ -481,21 +508,180 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
     if ((h1 & 0xFE40) == 0xE800) {
         int load = (h1 & 0x0010) != 0;
         if (load && (h2 & 0x8000)) { set(o, A_RETURN, "ldm {..,pc}"); return; }
+        o->op = load ? OP_POP : OP_PUSH;
+        o->rn = h1 & 0xF;
+        o->reglist = h2;
+        o->writeback = (h1 & 0x0020) != 0;
+        /* Only the SP-relative writeback forms are PUSH/POP proper; the rest
+         * are general LDM/STM against an arbitrary base and the emitter's
+         * stack-shaped translation would be wrong for them. */
+        if (o->rn != 13) o->op = OP_NONE;
         set(o, load ? A_LOADM : A_STOREM, "ldm/stm.w");
         return;
     }
 
-    /* Data processing, modified immediate and register forms. */
-    if ((h1 & 0xF800) == 0xF000 || (h1 & 0xFE00) == 0xEA00) {
+    /* --- data processing -------------------------------------------------- */
+    /*
+     * The shifted-register (0xEA/0xEB) and modified-immediate (0xF0/0xF1)
+     * groups share an operation field, an S bit, and the rn/rd placement, so
+     * they are decoded together and differ only in how operand 2 is formed.
+     *
+     * Four operations change identity when a register field is r15, and the
+     * architecture uses that rather than spending encoding space:
+     *   rn == 15 turns ORR into MOV and ORN into MVN
+     *   rd == 15 with S set turns AND/EOR/ADD/SUB into TST/TEQ/CMN/CMP
+     * Missing either produces an instruction that reads a register which is not
+     * an operand, and writes one that is not a destination.
+     */
+    if ((h1 & 0xFE00) == 0xEA00 || (h1 & 0xFA00) == 0xF000) {
+        /* Which of the two groups matched — NOT a single bit. Both 0xEA/0xEB
+         * and 0xF0/0xF1 have bit 15 set, so testing it classifies every
+         * shifted-register instruction as an immediate one and then reads
+         * operand 2 out of the wrong fields. */
+        int is_imm = (h1 & 0xFA00) == 0xF000;
+        if (is_imm && (h2 & 0x8000)) { set(o, A_UNKNOWN, "?"); return; }
+
+        static const arm_op dp[16] = {
+            OP_AND, OP_BIC, OP_ORR, OP_MVN, OP_EOR, OP_NONE, OP_NONE, OP_NONE,
+            OP_ADD, OP_NONE, OP_ADC, OP_SBC, OP_NONE, OP_SUB, OP_RSB, OP_NONE
+        };
+        int opf = (h1 >> 5) & 0xF;
+        o->op = dp[opf];
+        if (o->op == OP_NONE) { set(o, A_ALU, "alu.w"); return; }
+
+        o->rn = h1 & 0xF;
+        o->rd = (h2 >> 8) & 0xF;
+        o->sets_flags = (h1 & 0x0010) != 0;
+
+        if (o->rn == 15) {
+            if (opf == 0x2) o->op = OP_MOV;       /* orr rn=15 -> mov */
+            if (opf == 0x3) o->op = OP_MVN;       /* orn rn=15 -> mvn */
+            o->rn = ARM_NO_REG;
+        }
+        if (o->rd == 15 && o->sets_flags) {
+            /* Compare forms: the result is discarded, only flags matter. */
+            if (opf == 0x0) o->op = OP_TST;
+            if (opf == 0x4) o->op = OP_TST;       /* teq: same shape for us */
+            if (opf == 0x8) o->op = OP_CMN;
+            if (opf == 0xD) o->op = OP_CMP;
+            o->rd = ARM_NO_REG;
+        }
+
+        if (is_imm) {
+            uint32_t imm12 = (uint32_t)(((h1 >> 10) & 1) << 11)
+                           | (uint32_t)(((h2 >> 12) & 7) << 8)
+                           | (uint32_t)(h2 & 0xFF);
+            o->imm = thumb_expand_imm(imm12);
+            o->has_imm = 1;
+        } else {
+            o->rm = h2 & 0xF;
+            o->shift_type = (h2 >> 4) & 3;
+            o->shift_amt  = (uint8_t)((((h2 >> 12) & 7) << 2) | ((h2 >> 6) & 3));
+        }
         set(o, A_ALU, "alu.w");
         return;
     }
 
-    /* Single load/store. A load into the PC is a return. */
-    if ((h1 & 0xFE00) == 0xF800 || (h1 & 0xFF00) == 0xF900) {
+    /* Plain binary immediate: MOVW/MOVT and the wide add/sub. These carry a
+     * 16-bit literal rather than a modified immediate, and are how compilers
+     * build addresses — so they are worth decoding even though they are only
+     * two encodings. */
+    /* The group is selected by bit 9, which is what separates plain binary
+     * immediates from the modified immediates above. Masking any lower bit
+     * excludes members of the group: an earlier mask of 0xFB40 kept bit 6,
+     * which MOVW sets, so MOVW never matched at all. */
+    if ((h1 & 0xFA00) == 0xF200 && !(h2 & 0x8000)) {
+        uint32_t imm = (uint32_t)(((h1 >> 10) & 1) << 11)
+                     | (uint32_t)(((h2 >> 12) & 7) << 8)
+                     | (uint32_t)(h2 & 0xFF);
+        o->rd = (h2 >> 8) & 0xF;
+        o->has_imm = 1;
+
+        uint16_t form = h1 & 0xFBF0;
+        if (form == 0xF240) {                     /* movw: a 16-bit literal   */
+            o->op = OP_MOV;
+            o->imm = imm | ((uint32_t)(h1 & 0xF) << 12);
+            set(o, A_ALU, "movw");
+            return;
+        }
+        if (form == 0xF2C0) {                     /* movt                     */
+            o->imm = imm | ((uint32_t)(h1 & 0xF) << 12);
+            /* Deliberately left without an op: MOVT writes only the top half
+             * and preserves the bottom, so translating it as a move would
+             * silently discard the low 16 bits the preceding MOVW just set. */
+            set(o, A_ALU, "movt");
+            return;
+        }
+        if (form == 0xF200 || form == 0xF2A0) {   /* addw / subw              */
+            o->op = (form == 0xF2A0) ? OP_SUB : OP_ADD;
+            o->rn = h1 & 0xF;
+            o->imm = imm;
+            set(o, A_ALU, "addw/subw");
+            return;
+        }
+        set(o, A_ALU, "bitfield");                /* SBFX/UBFX/BFI and friends */
+        return;
+    }
+
+    /* Single load/store, immediate and register offset. A load into the PC is
+     * a return. */
+    if ((h1 & 0xFE00) == 0xF800) {
         int load = (h1 & 0x0010) != 0;
         if (load && ((h2 >> 12) & 0xF) == 0xF) { set(o, A_RETURN, "ldr pc"); return; }
+
+        int size = (h1 >> 5) & 3;                 /* 0 byte, 1 half, 2 word */
+        int sign = (h1 & 0x0100) != 0;
+        o->rt = (h2 >> 12) & 0xF;
+        o->rn = h1 & 0xF;
+        o->mem_add = 1;
+
+        if (load) o->op = size == 0 ? (sign ? OP_LDRSB : OP_LDRB)
+                        : size == 1 ? (sign ? OP_LDRSH : OP_LDRH) : OP_LDR;
+        else      o->op = size == 0 ? OP_STRB : size == 1 ? OP_STRH : OP_STR;
+
+        if (h1 & 0x0080) {                        /* 12-bit unsigned offset */
+            o->imm = h2 & 0xFFF;
+            o->has_imm = 1;
+        } else if ((h2 & 0x0F00) == 0x0C00) {     /* 8-bit, negative */
+            o->imm = h2 & 0xFF;
+            o->has_imm = 1;
+            o->mem_add = 0;
+        } else if ((h2 & 0x0FC0) == 0x0000) {     /* register offset */
+            o->rm = h2 & 0xF;
+            o->shift_amt = (uint8_t)((h2 >> 4) & 3);
+        } else {
+            o->imm = h2 & 0xFF;
+            o->has_imm = 1;
+        }
         set(o, load ? A_LOAD : A_STORE, "ldr/str.w");
+        return;
+    }
+
+    /* Shift by register, and the wide sign/zero extends. */
+    if ((h1 & 0xFF80) == 0xFA00 && (h2 & 0xF0F0) == 0xF000) {
+        static const arm_op sh[4] = { OP_LSL, OP_LSR, OP_ASR, OP_ROR };
+        o->op = sh[(h1 >> 5) & 3];
+        o->rd = (h2 >> 8) & 0xF;
+        o->rn = h1 & 0xF;
+        o->rm = h2 & 0xF;
+        o->sets_flags = (h1 & 0x0010) != 0;
+        set(o, A_ALU, "shift reg.w");
+        return;
+    }
+
+    /* Multiply. MLA/MLS have a third operand and are left to a trap rather
+     * than translated as a plain multiply, which would silently drop the
+     * accumulate. */
+    if ((h1 & 0xFFF0) == 0xFB00 && (h2 & 0x00F0) == 0x0000) {
+        if (((h2 >> 12) & 0xF) == 0xF) {          /* ra == 15 -> plain MUL */
+            o->op = OP_MUL;
+            o->rd = (h2 >> 8) & 0xF;
+            o->rn = h1 & 0xF;
+            o->rm = h2 & 0xF;
+            set(o, A_ALU, "mul.w");
+            return;
+        }
+        set(o, A_ALU, "mla/mls");
         return;
     }
 
