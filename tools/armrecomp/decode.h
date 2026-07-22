@@ -65,6 +65,18 @@ typedef enum {
     OP_ADR,
     OP_SXTB, OP_SXTH, OP_UXTB, OP_UXTH, OP_REV,
     OP_IT, OP_NOP, OP_SVC, OP_CBZ, OP_CBNZ,
+
+    /* Scalar VFP. Not vector work — 82% of this platform's coprocessor traffic
+     * is ordinary floating point, and it maps onto C almost one to one. */
+    OP_VLDR, OP_VSTR,
+    OP_VADD, OP_VSUB, OP_VMUL, OP_VDIV,
+    OP_VABS, OP_VNEG, OP_VSQRT,
+    OP_VMOV,        /* register to register                        */
+    OP_VMOV_TO_C,   /* VFP register -> core register               */
+    OP_VMOV_TO_V,   /* core register -> VFP register               */
+    OP_VCMP,
+    OP_VCVT_F2I, OP_VCVT_I2F,
+    OP_VMRS,
 } arm_op;
 
 /* Shift types, in the architecture's encoding order. */
@@ -91,6 +103,12 @@ typedef struct {
     arm_op     op;
     int8_t     rd, rn, rm, rt;  /* ARM_NO_REG when unused                */
     int8_t     rt2;             /* second transfer register: LDRD/STRD    */
+
+    /* VFP register numbers. Single-precision registers are numbered 0-31;
+     * double-precision 0-15, aliased onto the same storage. */
+    int8_t     vd, vn, vm;
+    uint8_t    vfp_dp;          /* 1 = double precision                   */
+    uint8_t    vfp_unsigned;    /* VCVT: unsigned integer form            */
     uint32_t   imm;
     uint8_t    has_imm;
     uint8_t    sets_flags;      /* writes NZCV                           */

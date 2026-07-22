@@ -433,10 +433,32 @@ Three things this does not claim:
 > `"?"` is a number that demands an explanation, and there wasn't one.
 
 The usual reason given for the Vita being a hard recompilation target is its
-NEON vector unit. At **5.19%** of instructions it is still a small minority, and
-recompiling the integer core — ordinary, well-documented ARMv7 — gets most of a
-game. But it is now **65% of everything still untranslated**, so it is the wall
-between roughly 95% and anything beyond.
+NEON vector unit. That reputation turns out to be misdirected, and the reason is
+worth stating precisely.
+
+**Most of the coprocessor space is not vector work at all.** Breaking the 5.19%
+down by sub-encoding:
+
+| Sub-encoding | Share of the coprocessor space | Difficulty |
+|---|---:|---|
+| VFP load/store (`VLDR`/`VSTR`/`VLDM`) | 47.9% | Moving 32-bit values |
+| VFP single-precision | 32.1% | Scalar float → C `float`, near 1:1 |
+| VFP double-precision | 1.6% | Same, `double` |
+| **Advanced SIMD (NEON)** | **18.1%** | The genuinely hard part |
+| other coprocessor | 0.3% | — |
+
+**82% of it is scalar floating point**, and nearly half is load/store that does
+no arithmetic whatsoever. Implementing scalar VFP took the SIMD bucket from
+7,242 instructions to 2,207 and overall translation from 92.04% to **95.64%**.
+
+NEON proper is **0.94% of all instructions** — a quarter the size the headline
+figure suggested. It is still the hardest thing left, but it is not a wall, and
+it was never the reason this platform looked difficult.
+
+The lesson generalises past this instruction set: a bucket named after its
+hardest member gets budgeted like its hardest member. Splitting it by encoding
+before writing any code turned "the largest remaining problem" into "half of it
+is `memcpy`".
 
 Every module in the corpus is **Thumb-2 dominant**, with a real ARM minority
 that makes mode tracking mandatory rather than optional.

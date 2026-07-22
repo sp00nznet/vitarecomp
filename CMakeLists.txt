@@ -43,6 +43,7 @@ add_library(vitarecomp STATIC
     src/trap.c
     src/loader.c
     src/dispatch.c
+    src/vfp.c
 )
 
 target_include_directories(vitarecomp PUBLIC

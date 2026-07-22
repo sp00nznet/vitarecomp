@@ -405,6 +405,151 @@ static void decode_t16(uint16_t h, arm_insn *o) {
     }
 }
 
+/* --- scalar VFP ------------------------------------------------------------- */
+/*
+ * The coprocessor space holds both Advanced SIMD and scalar VFP, and on this
+ * platform the split is roughly 18/82 in favour of the scalar side. This
+ * function claims the scalar part; anything it does not recognise falls back to
+ * being reported as SIMD, so the boundary stays honest rather than optimistic.
+ *
+ * Register numbering is the fiddly part, and it is fiddly in opposite
+ * directions for the two precisions. A single-precision register puts its LOW
+ * bit in the separate D/N/M flag and its high four bits in the main field; a
+ * double-precision register does the reverse. Getting it backwards yields a
+ * valid register number that is simply the wrong one — no error, just a program
+ * that reads floats it never wrote.
+ */
+
+static int vfp_sreg(int field, int extra) { return (field << 1) | extra; }
+static int vfp_dreg(int field, int extra) { return (extra << 4) | field; }
+
+static int decode_vfp(uint16_t h1, uint16_t h2, arm_insn *o) {
+    int coproc = (h2 >> 8) & 0xF;
+    int dp     = (coproc == 11);
+    if (coproc != 10 && coproc != 11) return 0;   /* not scalar VFP */
+
+    o->vfp_dp = (uint8_t)dp;
+
+    /* --- extension register load/store: VLDR / VSTR ----------------------- */
+    if ((h1 & 0xFE00) == 0xEC00) {
+        int P = (h1 >> 8) & 1, U = (h1 >> 7) & 1;
+        int D = (h1 >> 6) & 1, W = (h1 >> 5) & 1, L = (h1 >> 4) & 1;
+        int vd = (h2 >> 12) & 0xF;
+
+        /* P=1, W=0 is the plain offset form. The writeback and multiple-
+         * register forms (VLDM/VSTM/VPUSH/VPOP) share this encoding and are
+         * left alone rather than approximated. */
+        if (!P || W) return 0;
+
+        o->op  = L ? OP_VLDR : OP_VSTR;
+        o->rn  = h1 & 0xF;
+        o->vd  = (int8_t)(dp ? vfp_dreg(vd, D) : vfp_sreg(vd, D));
+        o->imm = (uint32_t)(h2 & 0xFF) * 4u;
+        o->has_imm = 1;
+        o->mem_add = (uint8_t)U;
+        set(o, L ? A_LOAD : A_STORE, L ? "vldr" : "vstr");
+        return 1;
+    }
+
+    if ((h1 & 0xEF00) != 0xEE00) return 0;        /* not VFP data processing */
+
+    int D  = (h1 >> 6) & 1;
+    int vn = h1 & 0xF;
+    int vd = (h2 >> 12) & 0xF;
+    int N  = (h2 >> 7) & 1;
+    int M  = (h2 >> 5) & 1;
+    int vm = h2 & 0xF;
+    int op = (h2 >> 6) & 1;
+    int opc1 = (h1 >> 4) & 0xB;                   /* bits 7, 5:4 */
+
+    o->vd = (int8_t)(dp ? vfp_dreg(vd, D) : vfp_sreg(vd, D));
+    o->vn = (int8_t)(dp ? vfp_dreg(vn, N) : vfp_sreg(vn, N));
+    o->vm = (int8_t)(dp ? vfp_dreg(vm, M) : vfp_sreg(vm, M));
+
+    /* --- VMRS: the float flags to the integer ones ------------------------ */
+    if ((h1 & 0xFFF0) == 0xEEF0 && (h2 & 0x0F10) == 0x0A10) {
+        o->op = OP_VMRS;
+        o->rt = (h2 >> 12) & 0xF;
+        set(o, A_SYS, "vmrs");
+        return 1;
+    }
+
+    /* --- VMOV between a core register and a single-precision register ----- */
+    if ((h1 & 0xFFE0) == 0xEE00 && (h2 & 0x0F7F) == 0x0A10) {
+        int to_vfp = ((h1 >> 4) & 1) == 0;
+        o->op = to_vfp ? OP_VMOV_TO_V : OP_VMOV_TO_C;
+        o->rt = (h2 >> 12) & 0xF;
+        o->vn = (int8_t)vfp_sreg(vn, N);          /* always single here */
+        o->vfp_dp = 0;
+        set(o, A_ALU, to_vfp ? "vmov s,r" : "vmov r,s");
+        return 1;
+    }
+
+    switch (opc1) {
+        case 0x0:                                  /* VMLA / VMLS: accumulate */
+            return 0;                              /* not approximated        */
+
+        case 0x2:
+            o->op = OP_VMUL;
+            set(o, A_ALU, "vmul");
+            return 1;
+
+        case 0x3:
+            o->op = op ? OP_VSUB : OP_VADD;
+            set(o, A_ALU, op ? "vsub" : "vadd");
+            return 1;
+
+        case 0x8:
+            o->op = OP_VDIV;
+            set(o, A_ALU, "vdiv");
+            return 1;
+
+        case 0xB: {                                /* the "other" group       */
+            int opc2 = h1 & 0xF;
+            int opc3 = (h2 >> 6) & 3;
+
+            if (opc2 == 0x0 && opc3 == 1) { o->op = OP_VMOV;  set(o, A_ALU, "vmov"); return 1; }
+            if (opc2 == 0x0 && opc3 == 3) { o->op = OP_VABS;  set(o, A_ALU, "vabs"); return 1; }
+            if (opc2 == 0x1 && opc3 == 1) { o->op = OP_VNEG;  set(o, A_ALU, "vneg"); return 1; }
+            if (opc2 == 0x1 && opc3 == 3) { o->op = OP_VSQRT; set(o, A_ALU, "vsqrt"); return 1; }
+
+            /* VCMP and VCMPE. The E form differs only in whether a quiet NaN
+             * raises an exception, which this runtime does not model. */
+            if ((opc2 == 0x4 || opc2 == 0x5) && (opc3 & 1)) {
+                o->op = OP_VCMP;
+                /* opc2 == 5 compares against zero rather than a register. */
+                if (opc2 == 0x5) { o->vm = ARM_NO_REG; o->has_imm = 1; o->imm = 0; }
+                set(o, A_ALU, "vcmp");
+                return 1;
+            }
+
+            /* Integer to float: opc2 1000, with the source signedness in the
+             * op bit rather than a separate field. */
+            if (opc2 == 0x8 && (opc3 & 1)) {
+                o->op = OP_VCVT_I2F;
+                o->vfp_unsigned = (uint8_t)(op == 0);
+                set(o, A_ALU, "vcvt f,i");
+                return 1;
+            }
+
+            /* Float to integer: opc2 110x (round to nearest) or 111x (toward
+             * zero). Only the toward-zero forms are claimed, because that is
+             * what C's conversion does and the other rounding modes would need
+             * explicit modelling to be right. */
+            if ((opc2 & 0xE) == 0xC && (opc3 & 1)) {
+                o->op = OP_VCVT_F2I;
+                o->vfp_unsigned = (uint8_t)((opc2 & 1) == 0);
+                set(o, A_ALU, "vcvt i,f");
+                return 1;
+            }
+            return 0;
+        }
+
+        default:
+            return 0;
+    }
+}
+
 /* --- Thumb, 32-bit ---------------------------------------------------------- */
 
 /* ThumbExpandImm — the 12-bit field that encodes a 32-bit constant.
@@ -452,6 +597,7 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
      * finally surfaced it: 2.16% of instructions decoding to "?" is a number
      * that demands an explanation, and there wasn't one. */
     if ((h1 & 0xEC00) == 0xEC00) {
+        if (decode_vfp(h1, h2, o)) return;
         set(o, A_SIMD, "simd/vfp");
         return;
     }
@@ -851,6 +997,7 @@ int arm_decode(const uint8_t *code, uint32_t code_addr, uint32_t code_len,
      * field the decoder never filled produces an obvious error instead of a
      * silent reference to the wrong register. */
     out->rd = out->rn = out->rm = out->rt = out->rt2 = ARM_NO_REG;
+    out->vd = out->vn = out->vm = ARM_NO_REG;
     out->cond = ARM_COND_AL;
 
     if (addr < code_addr) return 0;

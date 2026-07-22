@@ -89,8 +89,17 @@ obstacle on this platform.
 - [x] **Runtime dispatch** — a sorted address→function table, so `BX Rm` and
       `BLX Rm` become real transfers. The module has ~18,000 indirect sites;
       without this the program cannot leave `module_start`
+- [x] **Scalar VFP** — the float register file with single/double aliasing,
+      `VLDR`/`VSTR`, arithmetic, `VABS`/`VNEG`/`VSQRT`, `VCMP` with proper
+      unordered-NaN semantics, `VMRS`, `VMOV` core↔VFP, and `VCVT`.
+      Translation **92.04% → 95.64%**
+- [ ] Branch targets promoted to functions — 2,547 instructions (1.82%), and
+      the cheapest remaining win
+- [ ] Bitfield ops — 655 (0.47%)
+- [ ] Advanced SIMD (NEON) — 0.94% of all instructions, and the only genuinely
+      hard piece left
 - [ ] ARM (A32) operand decoding — a small minority of this corpus
-- [ ] `MLA`/`MLS`, bitfield ops — decoded and classified, still trapping
+- [ ] `MLA`/`MLS`, general `LDM`/`STM` — long tail under 200
 
 ## Phase 6 — the runtime and HLE (in progress)
 

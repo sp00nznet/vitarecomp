@@ -591,6 +591,116 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             else                 fprintf(f, "    vita_dispatch(%s);\n", reg_name(in->rm));
             break;
 
+        /* --- scalar VFP ---------------------------------------------------
+         *
+         * Emitted through accessors rather than as direct array indexing, so
+         * the single/double aliasing lives in one place. `dp` selects between
+         * the float and double forms of everything.
+         */
+        case OP_VLDR: case OP_VSTR: {
+            if (in->rn == ARM_NO_REG || in->vd == ARM_NO_REG) { ok = 0; break; }
+            char a[64];
+            snprintf(a, sizeof(a), "%s %c 0x%X", reg_name(in->rn),
+                     in->mem_add ? '+' : '-', in->imm);
+            if (in->op == OP_VLDR) {
+                if (in->vfp_dp) {
+                    fprintf(f, "    vfp_s[%d].u = vita_read32(%s);\n", in->vd * 2, a);
+                    fprintf(f, "    vfp_s[%d].u = vita_read32((%s) + 4);\n", in->vd * 2 + 1, a);
+                } else {
+                    fprintf(f, "    vfp_setu(%d, vita_read32(%s));\n", in->vd, a);
+                }
+            } else {
+                if (in->vfp_dp) {
+                    fprintf(f, "    vita_write32(%s, vfp_s[%d].u);\n", a, in->vd * 2);
+                    fprintf(f, "    vita_write32((%s) + 4, vfp_s[%d].u);\n", a, in->vd * 2 + 1);
+                } else {
+                    fprintf(f, "    vita_write32(%s, vfp_getu(%d));\n", a, in->vd);
+                }
+            }
+            break;
+        }
+
+        case OP_VADD: case OP_VSUB: case OP_VMUL: case OP_VDIV: {
+            if (in->vd == ARM_NO_REG || in->vn == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            char c = in->op == OP_VADD ? '+' : in->op == OP_VSUB ? '-'
+                   : in->op == OP_VMUL ? '*' : '/';
+            if (in->vfp_dp)
+                fprintf(f, "    vfp_setd(%d, vfp_getd(%d) %c vfp_getd(%d));\n",
+                        in->vd, in->vn, c, in->vm);
+            else
+                fprintf(f, "    vfp_setf(%d, vfp_getf(%d) %c vfp_getf(%d));\n",
+                        in->vd, in->vn, c, in->vm);
+            break;
+        }
+
+        case OP_VMOV:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            if (in->vfp_dp) fprintf(f, "    vfp_setd(%d, vfp_getd(%d));\n", in->vd, in->vm);
+            else            fprintf(f, "    vfp_setu(%d, vfp_getu(%d));\n", in->vd, in->vm);
+            break;
+
+        case OP_VABS:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            /* Clearing the sign bit rather than calling fabs: it is the
+             * architecture's definition, and it preserves NaN payloads where
+             * a library call need not. */
+            if (in->vfp_dp) fprintf(f, "    vfp_setd(%d, vfp_getd(%d) < 0.0 ? -vfp_getd(%d) : vfp_getd(%d));\n",
+                                    in->vd, in->vm, in->vm, in->vm);
+            else            fprintf(f, "    vfp_setu(%d, vfp_getu(%d) & 0x7FFFFFFFu);\n", in->vd, in->vm);
+            break;
+
+        case OP_VNEG:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            if (in->vfp_dp) fprintf(f, "    vfp_setd(%d, -vfp_getd(%d));\n", in->vd, in->vm);
+            else            fprintf(f, "    vfp_setu(%d, vfp_getu(%d) ^ 0x80000000u);\n", in->vd, in->vm);
+            break;
+
+        case OP_VSQRT:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            if (in->vfp_dp) fprintf(f, "    vfp_setd(%d, sqrt(vfp_getd(%d)));\n", in->vd, in->vm);
+            else            fprintf(f, "    vfp_setf(%d, (float)sqrt((double)vfp_getf(%d)));\n", in->vd, in->vm);
+            break;
+
+        case OP_VCMP:
+            if (in->vd == ARM_NO_REG) { ok = 0; break; }
+            /* Writes FPSCR, not the integer flags. A later VMRS moves them. */
+            if (in->vm == ARM_NO_REG) {
+                if (in->vfp_dp) fprintf(f, "    vfp_cmp_f64(vfp_getd(%d), 0.0);\n", in->vd);
+                else            fprintf(f, "    vfp_cmp_f32(vfp_getf(%d), 0.0f);\n", in->vd);
+            } else {
+                if (in->vfp_dp) fprintf(f, "    vfp_cmp_f64(vfp_getd(%d), vfp_getd(%d));\n", in->vd, in->vm);
+                else            fprintf(f, "    vfp_cmp_f32(vfp_getf(%d), vfp_getf(%d));\n", in->vd, in->vm);
+            }
+            break;
+
+        case OP_VMRS:
+            fprintf(f, "    vfp_mrs_apsr();\n");
+            break;
+
+        case OP_VMOV_TO_V:
+            if (in->rt == ARM_NO_REG || in->vn == ARM_NO_REG) { ok = 0; break; }
+            fprintf(f, "    vfp_setu(%d, %s);\n", in->vn, reg_name(in->rt));
+            break;
+
+        case OP_VMOV_TO_C:
+            if (in->rt == ARM_NO_REG || in->vn == ARM_NO_REG) { ok = 0; break; }
+            fprintf(f, "    %s = vfp_getu(%d);\n", reg_name(in->rt), in->vn);
+            break;
+
+        case OP_VCVT_I2F:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            fprintf(f, "    vfp_setf(%d, (float)(%s)vfp_getu(%d));\n",
+                    in->vd, in->vfp_unsigned ? "uint32_t" : "int32_t", in->vm);
+            break;
+
+        case OP_VCVT_F2I:
+            if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            /* Toward zero, which is what a C cast does — the only rounding
+             * mode claimed by the decoder for exactly that reason. */
+            fprintf(f, "    vfp_setu(%d, (uint32_t)(%s)vfp_getf(%d));\n",
+                    in->vd, in->vfp_unsigned ? "uint32_t" : "int32_t", in->vm);
+            break;
+
         case OP_NOP:
             fprintf(f, "    /* nop */\n");
             break;
