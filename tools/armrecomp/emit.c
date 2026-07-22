@@ -178,6 +178,36 @@ static void collect(const vm_image *img, const vf_func *fn, fbody *b) {
     /* Blocks were discovered out of order; emit in address order so the output
      * reads alongside a disassembly. */
     if (b->n > 1) qsort(b->v, b->n, sizeof(arm_insn), cmp_addr);
+
+    /* Drop labels for blocks that were never collected.
+     *
+     * A label is recorded the moment a branch target is seen inside the
+     * function's extent, but the block behind it is only reached if the walk
+     * gets there — and the walk can stop short at any of three limits: the
+     * visited table filling, the block stack filling, or the per-function
+     * instruction cap. When that happens the label is referenced by a `goto`
+     * and never placed, which is C that does not compile.
+     *
+     * Pruning here rather than raising the limits is the honest fix: the limits
+     * exist for a reason, and a `goto` into a block we did not translate would
+     * be a lie even if the compiler accepted it. Removing the label routes the
+     * branch through the call-or-trap path below, which says what is actually
+     * true — either the target is a function, or we cannot get there.
+     *
+     * This only showed up at 1,500 functions. At 100 nothing reached a limit,
+     * so the output compiled and the bug was invisible. */
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < b->nlabels; i++) {
+        int placed = 0;
+        uint32_t lo = 0, hi = b->n;
+        while (lo < hi) {                      /* body is sorted by address */
+            uint32_t mid = lo + (hi - lo) / 2;
+            if (b->v[mid].addr == b->labels[i]) { placed = 1; break; }
+            if (b->v[mid].addr <  b->labels[i]) lo = mid + 1; else hi = mid;
+        }
+        if (placed) b->labels[kept++] = b->labels[i];
+    }
+    b->nlabels = kept;
 }
 
 /* --- operand rendering ------------------------------------------------------ */
@@ -534,6 +564,17 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             }
             break;
 
+        case OP_BX: case OP_BLX:
+            /* An indirect transfer through a register. The destination is a
+             * value, so it can only be resolved while running — this is the one
+             * place a recompiler genuinely needs a lookup rather than a
+             * translation. BX is a tail transfer and does not come back; BLX is
+             * a call and does. */
+            if (in->rm == ARM_NO_REG) { ok = 0; break; }
+            if (in->op == OP_BX) fprintf(f, "    vita_dispatch(%s); return;\n", reg_name(in->rm));
+            else                 fprintf(f, "    vita_dispatch(%s);\n", reg_name(in->rm));
+            break;
+
         case OP_NOP:
             fprintf(f, "    /* nop */\n");
             break;
@@ -600,7 +641,8 @@ int em_emit(const vm_image *img, const vm_module *mod, const nid_db *db,
     fprintf(f, " * module: %s\n", mod->info.name);
     fprintf(f, " * %u functions\n", disc->count);
     fprintf(f, " */\n\n");
-    fprintf(f, "#include \"vitarecomp/recomp_rt.h\"\n\n");
+    fprintf(f, "#include \"vitarecomp/recomp_rt.h\"\n");
+    fprintf(f, "#include \"vitarecomp/dispatch.h\"\n\n");
 
     /* Declare every import the module could call. Emitting these unconditionally
      * — rather than only the ones a limited emit happens to reach — keeps the
@@ -699,6 +741,23 @@ int em_emit(const vm_image *img, const vm_module *mod, const nid_db *db,
         }
         st->imports_used = mod->stub_count;
     }
+
+    /* The dispatch table: every function, sorted by guest address, so an
+     * indirect transfer can find it at run time. Emitted for ALL discovered
+     * functions — including any not emitted under --limit, which have trapping
+     * stubs — because a dispatch that misses should report "we never translated
+     * that" rather than "that address is not a function". */
+    fprintf(f, "/* ---------------------------------------------------------------\n");
+    fprintf(f, " * dispatch table -- %u entries, sorted by guest address\n", disc->count);
+    fprintf(f, " * ------------------------------------------------------------- */\n");
+    fprintf(f, "static const vita_dispatch_entry vita_functions[] = {\n");
+    for (uint32_t i = 0; i < fs.n; i++)
+        fprintf(f, "    { 0x%08Xu, vita_func_%08X },\n", fs.v[i], fs.v[i]);
+    fprintf(f, "};\n\n");
+    fprintf(f, "void vita_register_functions(void) {\n");
+    fprintf(f, "    vita_dispatch_init(vita_functions,\n");
+    fprintf(f, "        (uint32_t)(sizeof(vita_functions) / sizeof(vita_functions[0])));\n");
+    fprintf(f, "}\n");
 
     free(fs.v);
     return 0;

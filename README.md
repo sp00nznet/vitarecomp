@@ -232,6 +232,36 @@ state is wrong and every later trap is reached down a path that would not have
 happened on hardware. What it is good for is one run naming many missing pieces
 instead of one.
 
+## Indirect transfers, and a bug only scale revealed
+
+With `MOVT` fixed the trace stopped reporting untranslated instructions and
+started reporting what the program was actually trying to do: **transfer
+control through a register.** `module_start` does not call the real entry point,
+it passes it as a *pointer* — the same shape psprecomp documented on PSP — and
+C++ virtual dispatch does the rest. The module has ~18,000 such sites.
+
+A recompiled program has no program counter, so `BX r3` cannot be translated
+statically; the destination is a value known only at run time. The answer is a
+sorted address→function table and a binary search
+([`dispatch.c`](src/dispatch.c)). A hit is a real transfer; a miss is a named
+trap, never a silent return — jumping somewhere untranslated has to stop,
+because continuing runs the caller with the callee's work undone.
+
+Masking bit 0 in one place matters here: every pointer to Thumb code carries it
+as an instruction-set marker, and a lookup that does not mask misses *every*
+entry by one.
+
+Scaling the emit from 100 to 1,500 functions also exposed a generated-code bug
+that smaller runs could not. Labels were recorded the moment a branch target was
+seen inside a function's extent, but the block behind one is only collected if
+the walk reaches it — and the walk can stop short at three separate limits. The
+result was `goto L_81521D2C` with no such label, which does not compile.
+
+The fix is to prune labels against what was actually emitted rather than raise
+the limits. A `goto` into a block we never translated would be a lie even if the
+compiler accepted it; dropping the label routes the branch through the
+call-or-trap path, which says what is true.
+
 ## Where the runtime earns its keep
 
 Every helper exists because the obvious C is **wrong**, not merely verbose:

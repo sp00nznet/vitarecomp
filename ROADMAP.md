@@ -86,6 +86,9 @@ obstacle on this platform.
 - [x] **A host**: ELF segment loader, guest memory, stack, and `module_start`
       called for real. `VITARECOMP_TRACE=1` logs and continues instead of
       aborting, so one run names many missing pieces
+- [x] **Runtime dispatch** — a sorted address→function table, so `BX Rm` and
+      `BLX Rm` become real transfers. The module has ~18,000 indirect sites;
+      without this the program cannot leave `module_start`
 - [ ] ARM (A32) operand decoding — a small minority of this corpus
 - [ ] `MLA`/`MLS`, bitfield ops — decoded and classified, still trapping
 
