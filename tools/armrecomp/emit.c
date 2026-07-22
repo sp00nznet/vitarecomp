@@ -161,8 +161,23 @@ static void collect(const vm_image *img, const vf_func *fn, fbody *b) {
 
             if (in.cls == A_RETURN) break;
 
+            /* `bound`, not `fn->end`.
+             *
+             * These must be the same notion of "inside this function" or the
+             * walk and the labelling disagree. The walk above collects up to
+             * `bound`, which falls back to a generous range when discovery
+             * recorded only a tiny extent — and it records a tiny extent
+             * whenever an earlier function's walk had already marked those
+             * instructions seen, which is common.
+             *
+             * Gating labels on `fn->end` instead meant that for exactly those
+             * functions, instructions were collected but branches into them got
+             * no label. Each then fell through to the call-or-trap path and
+             * trapped: 2,547 instructions, and every one of them an ordinary
+             * intra-function branch that had already been translated correctly
+             * a few lines above. */
             if (in.has_target && in.cls == A_BRANCH &&
-                in.target >= fn->addr && in.target < fn->end) {
+                in.target >= fn->addr && in.target < bound) {
                 fb_label(b, in.target);
                 if (sp_ < (int)(sizeof(stack) / sizeof(stack[0])))
                     stack[sp_++] = in.target;
@@ -571,12 +586,22 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
                 if (in->cond == ARM_COND_AL) fprintf(f, "    goto L_%08X;\n", in->target);
                 else fprintf(f, "    if (vita_cond(%u)) goto L_%08X;\n",
                              in->cond, in->target);
+            } else if (in->target < img->seg_vaddr ||
+                       in->target >= img->seg_vaddr + img->seg_len) {
+                /* Outside the segment entirely. This is not a branch the
+                 * program makes — it is a linear sweep decoding data as code,
+                 * which happens wherever a literal pool or a table sits inside
+                 * .text. Naming it separately keeps it out of the count of
+                 * things worth implementing. */
+                fprintf(f, "    vita_trap_unimpl(0x%08X, 0x%08X, \"branch out of segment\");\n",
+                        in->addr, in->raw);
+                note_trap(st, "branch: target off-segment");
             } else {
                 /* A branch out of this function's extent is a tail call. */
                 if (in->cond == ARM_COND_AL)
-                    if (fs_has(fs, in->target)) fprintf(f, "    vita_func_%08X(); return;\n", in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); ok = 0; }
+                    if (fs_has(fs, in->target)) fprintf(f, "    vita_func_%08X(); return;\n", in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); note_trap(st, "branch: target not a function"); }
                 else
-                    if (fs_has(fs, in->target)) fprintf(f, "    if (vita_cond(%u)) { vita_func_%08X(); return; }\n", in->cond, in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); ok = 0; }
+                    if (fs_has(fs, in->target)) fprintf(f, "    if (vita_cond(%u)) { vita_func_%08X(); return; }\n", in->cond, in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); note_trap(st, "branch: target not a function"); }
             }
             break;
 

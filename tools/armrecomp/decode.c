@@ -629,6 +629,14 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
         }
 
         if ((op1 & 0x5) == 0x4) {               /* x10x -> B.W unconditional */
+            /* `op` matters as much as the class. The class routes the emitter's
+             * fallback, but only `op` reaches the switch that actually
+             * translates a branch — leaving it OP_NONE meant every wide branch
+             * decoded perfectly, computed its target correctly, and then
+             * trapped anyway. 2,359 instructions, purely for want of this
+             * line. */
+            o->op = OP_B;
+            o->cond = ARM_COND_AL;
             set(o, A_BRANCH, "b.w");
             uint32_t s   = (h1 >> 10) & 1;
             uint32_t j1  = (h2 >> 13) & 1;
@@ -646,6 +654,8 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
         /* x0x -> conditional B.W, or a system instruction when the condition
          * field is 111x. */
         if (((h1 >> 7) & 0xE) == 0xE) { set(o, A_SYS, "sys"); return; }
+        o->op = OP_B;
+        o->cond = (uint8_t)((h1 >> 6) & 0xF);
         set(o, A_BRANCH, "b<cond>.w");
         o->conditional = 1;
         {

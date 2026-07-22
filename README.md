@@ -269,36 +269,55 @@ actionable and "SIMD is 65% of what is left" is:
 
 ```
 still trapping, by kind:
-  simd/vfp                     7242    5.19% of all instructions
-  b<cond>.w                    1508    1.08%
-  b.w                           851    0.61%
-  bitfield                      655    0.47%
-  ?                             236    0.17%
-  b                             150    0.11%
-  ldm/stm                        96    0.07%
-  indirect transfer              95    0.07%
-  ...
+  simd/vfp                          2207    1.58% of all instructions
+  branch: target not a function      906    0.65%
+  bitfield                          655    0.47%
+  ?                                 236    0.17%
+  ldm/stm                            96    0.07%
+  indirect transfer                  95    0.07%
+  misc                               88    0.06%
+  sys                                64    0.05%
 ```
 
-Reading it in value order rather than count order:
+### Two wrong guesses before the right measurement
 
-1. **Branch targets — 2,547 instructions (1.82%), and not a decode gap at all.**
-   These branches decode perfectly. They trap because the target is neither a
-   placed label nor a registered function, so there is nothing to name. It is a
+The 2,547 trapping branches looked like a discovery problem — targets that were
+never registered as functions. Two plausible fixes came first, and both were
+wrong:
+
+1. **An inconsistency between `bound` and `fn->end`** in the emitter's collect
+   pass, where the walk used one and the labelling used the other. That was a
+   genuine bug and worth fixing, but it moved translation by 0.01%.
+2. **Branch targets needing promotion to functions.** Reasonable, and it is
+   still true for a residue — but it was not what the bulk of them were.
+
+Making the emitter report *why* each branch trapped settled it in one run: only
+177 were the not-a-function case. The other 2,359 were something else entirely
+— the decoder set the class, the mnemonic, and a correctly computed target for
+`b.w` and `b<cond>.w`, and never set `op`. The emitter's translation switch is
+keyed on `op`, so every wide branch decoded perfectly and then fell through to a
+trap. Two missing assignments, worth **1.8% of the entire module**.
+
+The lesson is the one this project keeps relearning in new costumes: the
+plausible explanation and the true one are different things, and instrumenting
+the tool to say which case it hit is cheaper than reasoning about which case it
+probably hit.
+
+Reading what remains in value order rather than count order:
+
+1. **Advanced SIMD — 2,207 (1.58%).** Now the largest, and the only genuinely
+   hard piece left. Everything scalar has been claimed.
+2. **Branch targets — 906 (0.65%).** The residue of the branch work: targets
+   that really are neither a placed label nor a registered function. A
    *discovery* fix — being branched to from outside a collected region makes an
-   address an entry point, exactly as being called does — and it converts every
-   one of them from a trap into a call. Cheapest remaining win by a wide margin.
-2. **Bitfield ops — 655 (0.47%).** `SBFX`/`UBFX`/`BFI`/`BFC`. Mechanical, well
-   defined, bounded.
-3. **General `LDM`/`STM` — 121 (0.09%).** Only the SP-relative forms translate
-   today; an arbitrary base needs the general form.
-4. **`MLA`/`MLS`, `misc`, `sys` — under 200 combined.** Long tail.
-5. **SIMD/VFP — 7,242 (5.19%).** The largest by far and the only genuinely hard
-   one.
+   address an entry point, exactly as being called does.
+3. **Bitfield ops — 655 (0.47%).** `SBFX`/`UBFX`/`BFI`/`BFC`. Mechanical.
+4. **`"?"` — 236 (0.17%).** Down from 3,034; mostly data decoded as code.
+5. **The long tail — under 350 combined.** General `LDM`/`STM`, `MLA`/`MLS`,
+   `misc`, `sys`.
 
-Everything above SIMD comes to roughly **2.5%**, which puts a realistic ceiling
-of about **94.5% without touching the vector unit**. After that, NEON is the
-whole remaining problem.
+Excluding NEON, roughly **1.4%** remains, so about **99% is reachable without
+touching the vector unit**.
 
 ## Where the runtime earns its keep
 

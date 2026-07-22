@@ -93,8 +93,10 @@ obstacle on this platform.
       `VLDR`/`VSTR`, arithmetic, `VABS`/`VNEG`/`VSQRT`, `VCMP` with proper
       unordered-NaN semantics, `VMRS`, `VMOV` core↔VFP, and `VCVT`.
       Translation **92.04% → 95.64%**
-- [ ] Branch targets promoted to functions — 2,547 instructions (1.82%), and
-      the cheapest remaining win
+- [x] **Wide branches** — `b.w` and `b<cond>.w` decoded their targets correctly
+      and then trapped anyway, because the decoder never set `op`. Translation
+      **95.65% → 97.47%**
+- [ ] Branch targets promoted to functions — 906 remaining (0.65%)
 - [ ] Bitfield ops — 655 (0.47%)
 - [ ] Advanced SIMD (NEON) — 0.94% of all instructions, and the only genuinely
       hard piece left
