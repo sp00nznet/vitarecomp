@@ -436,9 +436,42 @@ static int decode_vfp(uint16_t h1, uint16_t h2, arm_insn *o) {
         int D = (h1 >> 6) & 1, W = (h1 >> 5) & 1, L = (h1 >> 4) & 1;
         int vd = (h2 >> 12) & 0xF;
 
-        /* P=1, W=0 is the plain offset form. The writeback and multiple-
-         * register forms (VLDM/VSTM/VPUSH/VPOP) share this encoding and are
-         * left alone rather than approximated. */
+        /* P=1, W=0 is the plain offset form: VLDR/VSTR. Everything else in
+         * this encoding is a register-LIST transfer — VLDM/VSTM, and the
+         * SP-relative VPUSH/VPOP that are by far the most common of them.
+         *
+         * These are worth claiming rather than skipping: they were 293 of the
+         * instructions still reported as "SIMD", which is more than a fifth of
+         * that bucket, and they do no arithmetic at all. imm8 counts the
+         * registers transferred — one per register for single precision, two
+         * for double. */
+        /* The list forms are exactly W == 1:
+         *   P=1 W=0  VLDR/VSTR, a single register at an offset
+         *   P=0 W=1  VLDMIA
+         *   P=1 W=1  VLDMDB / VPUSH / VPOP
+         *   P=0 W=0  64-bit core<->VFP transfer, not claimed here
+         *
+         * An earlier revision tested `P != W`, which is also true for P=1 W=0 —
+         * so it captured the plain VLDR/VSTR forms that were already working
+         * and re-decoded them as register lists. Translation went DOWN. Worth
+         * recording: a change that claims more encodings can still be a
+         * regression if it claims the wrong ones. */
+        if (W) {
+            int vd_first = dp ? vfp_dreg(vd, D) : vfp_sreg(vd, D);
+            uint32_t n = (uint32_t)(h2 & 0xFF);
+            if (dp) n /= 2;
+            if (n == 0 || n > 32) return 0;
+
+            o->op = L ? OP_VLDM : OP_VSTM;
+            o->rn = h1 & 0xF;
+            o->vd = (int8_t)vd_first;
+            o->imm = n;                       /* register count */
+            o->has_imm = 1;
+            o->writeback = (uint8_t)W;
+            o->mem_add = (uint8_t)U;          /* 0 = decrement before (VPUSH) */
+            set(o, L ? A_LOADM : A_STOREM, L ? "vldm/vpop" : "vstm/vpush");
+            return 1;
+        }
         if (!P || W) return 0;
 
         o->op  = L ? OP_VLDR : OP_VSTR;
@@ -486,8 +519,24 @@ static int decode_vfp(uint16_t h1, uint16_t h2, arm_insn *o) {
     }
 
     switch (opc1) {
-        case 0x0:                                  /* VMLA / VMLS: accumulate */
-            return 0;                              /* not approximated        */
+        case 0x0:
+            /* Multiply-accumulate. Previously declined on the grounds that
+             * translating it as a plain multiply would drop the accumulate —
+             * which was right about the hazard and wrong about the conclusion,
+             * exactly as with MOVT. It expresses directly as
+             * `vd = vd +/- (vn * vm)`, and it was 404 instructions.
+             *
+             * The only genuine loss is that ARM may fuse the multiply and add
+             * without an intermediate rounding step, where C rounds twice. That
+             * is a last-bit difference in the mantissa, not a wrong answer, and
+             * it is recorded rather than silently accepted. */
+            o->op = op ? OP_VMLS : OP_VMLA;
+            set(o, A_ALU, op ? "vmls" : "vmla");
+            return 1;
+
+        case 0x1:                                  /* VNMLA / VNMLS / VNMUL   */
+            if (op) { o->op = OP_VNMUL; set(o, A_ALU, "vnmul"); return 1; }
+            return 0;                              /* negated accumulate forms */
 
         case 0x2:
             o->op = OP_VMUL;

@@ -77,6 +77,9 @@ typedef enum {
     OP_VCMP,
     OP_VCVT_F2I, OP_VCVT_I2F,
     OP_VMRS,
+    OP_VLDM, OP_VSTM,   /* register-list float load/store, incl. VPUSH/VPOP */
+    OP_VMLA, OP_VMLS,   /* multiply-accumulate: vd = vd +/- (vn * vm)       */
+    OP_VNMUL,
 } arm_op;
 
 /* Shift types, in the architecture's encoding order. */

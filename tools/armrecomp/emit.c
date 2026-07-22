@@ -658,6 +658,49 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             break;
         }
 
+        case OP_VLDM: case OP_VSTM: {
+            if (in->rn == ARM_NO_REG || in->vd == ARM_NO_REG) { ok = 0; break; }
+            /* Registers occupy ascending addresses regardless of direction. A
+             * decrement-before form (VPUSH) moves the base down by the whole
+             * block first, then writes upward from there — the same shape as
+             * the integer PUSH, and for the same reason. */
+            uint32_t n     = in->imm;
+            uint32_t words = in->vfp_dp ? n * 2 : n;
+            const char *rn = reg_name(in->rn);
+
+            if (!in->mem_add) fprintf(f, "    %s -= %u;\n", rn, words * 4);
+            for (uint32_t k = 0; k < words; k++) {
+                int reg = (in->vfp_dp ? in->vd * 2 : in->vd) + (int)k;
+                if (in->op == OP_VLDM)
+                    fprintf(f, "    vfp_s[%d].u = vita_read32(%s + %u);\n", reg & 31, rn, k * 4);
+                else
+                    fprintf(f, "    vita_write32(%s + %u, vfp_s[%d].u);\n", rn, k * 4, reg & 31);
+            }
+            if (in->mem_add && in->writeback)
+                fprintf(f, "    %s += %u;\n", rn, words * 4);
+            break;
+        }
+
+        case OP_VMLA: case OP_VMLS: {
+            if (in->vd == ARM_NO_REG || in->vn == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            char c = (in->op == OP_VMLA) ? '+' : '-';
+            if (in->vfp_dp)
+                fprintf(f, "    vfp_setd(%d, vfp_getd(%d) %c (vfp_getd(%d) * vfp_getd(%d)));\n",
+                        in->vd, in->vd, c, in->vn, in->vm);
+            else
+                fprintf(f, "    vfp_setf(%d, vfp_getf(%d) %c (vfp_getf(%d) * vfp_getf(%d)));\n",
+                        in->vd, in->vd, c, in->vn, in->vm);
+            break;
+        }
+
+        case OP_VNMUL:
+            if (in->vd == ARM_NO_REG || in->vn == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
+            if (in->vfp_dp)
+                fprintf(f, "    vfp_setd(%d, -(vfp_getd(%d) * vfp_getd(%d)));\n", in->vd, in->vn, in->vm);
+            else
+                fprintf(f, "    vfp_setf(%d, -(vfp_getf(%d) * vfp_getf(%d)));\n", in->vd, in->vn, in->vm);
+            break;
+
         case OP_VMOV:
             if (in->vd == ARM_NO_REG || in->vm == ARM_NO_REG) { ok = 0; break; }
             if (in->vfp_dp) fprintf(f, "    vfp_setd(%d, vfp_getd(%d));\n", in->vd, in->vm);

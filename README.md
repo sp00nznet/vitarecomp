@@ -305,8 +305,17 @@ probably hit.
 
 Reading what remains in value order rather than count order:
 
-1. **Advanced SIMD — 2,207 (1.58%).** Now the largest, and the only genuinely
-   hard piece left. Everything scalar has been claimed.
+1. **Advanced SIMD — 1,647 (1.18%), of which ~1,300 is true NEON.** The only
+   genuinely hard piece left.
+
+   Splitting this bucket paid twice. The first split found 82% of it was scalar
+   VFP. Splitting the *remainder* found 40% of that was scalar VFP too —
+   `VPUSH`/`VPOP`/`VLDM`/`VSTM` (293) and multiply-accumulate (476), both of
+   which had been declined earlier on the reasoning that approximating them
+   would be worse than trapping. `VMLA` expresses directly as
+   `vd = vd + (vn * vm)`; the only real loss is that ARM may fuse the multiply
+   and add without an intermediate rounding, where C rounds twice — a last-bit
+   mantissa difference, recorded rather than silently accepted.
 2. **Branch targets — 906 (0.65%).** The residue of the branch work: targets
    that really are neither a placed label nor a registered function. A
    *discovery* fix — being branched to from outside a collected region makes an

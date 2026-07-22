@@ -98,8 +98,11 @@ obstacle on this platform.
       **95.65% → 97.47%**
 - [ ] Branch targets promoted to functions — 906 remaining (0.65%)
 - [ ] Bitfield ops — 655 (0.47%)
-- [ ] Advanced SIMD (NEON) — 0.94% of all instructions, and the only genuinely
-      hard piece left
+- [x] **The scalar VFP remainder** — `VPUSH`/`VPOP`/`VLDM`/`VSTM` and the
+      multiply-accumulate forms. Translation **97.47% → 97.87%**
+- [ ] Advanced SIMD (NEON) — ~1,300 instructions (0.94%), and now genuinely the
+      only hard piece left. *Advanced SIMD and NEON are the same instruction
+      set — ARM's formal name and the marketing one — so this is one job.*
 - [ ] ARM (A32) operand decoding — a small minority of this corpus
 - [ ] `MLA`/`MLS`, general `LDM`/`STM` — long tail under 200
 
