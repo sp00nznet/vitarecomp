@@ -266,6 +266,22 @@ static int address(char *dst, size_t cap, const arm_insn *in) {
 
 /* --- one instruction --------------------------------------------------------- */
 
+/* Mnemonics are static strings, so the pointer identifies the kind and the
+ * table stays a short linear scan. */
+static void note_trap(emit_stats *st, const char *what) {
+    if (!what) what = "?";
+    for (uint32_t i = 0; i < st->trap_kinds; i++) {
+        if (st->traps[i].what == what) { st->traps[i].count++; return; }
+    }
+    if (st->trap_kinds < EM_MAX_TRAP_KINDS) {
+        st->traps[st->trap_kinds].what  = what;
+        st->traps[st->trap_kinds].count = 1;
+        st->trap_kinds++;
+        return;
+    }
+    st->traps_other++;
+}
+
 static void trap(FILE *f, const arm_insn *in, const char *why) {
     fprintf(f, "    vita_trap_unimpl(0x%08X, 0x%08X, \"%s\");\n",
             in->addr, in->raw, why);
@@ -605,10 +621,13 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             ok = 1;
         } else if (in->cls == A_CALL || in->cls == A_INDIRECT) {
             fprintf(f, "    vita_trap_indirect(0x%08X, 0);\n", in->addr);
+            note_trap(st, "indirect transfer");
         } else if (in->cls == A_SIMD) {
             trap(f, in, "simd");
+            note_trap(st, "simd/vfp");
         } else {
             trap(f, in, in->mnemonic);
+            note_trap(st, in->mnemonic);
         }
     }
 

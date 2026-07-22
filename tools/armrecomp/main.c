@@ -746,6 +746,28 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
            st.insns ? 100.0 * st.trapped / st.insns : 0.0);
     printf("  literals      %u  folded to constants\n", st.literals);
     printf("  import calls  %u  bound to firmware\n", st.import_calls);
+
+    if (st.trap_kinds) {
+        /* Ranked, because the question is always which one to do next. */
+        uint32_t ord[EM_MAX_TRAP_KINDS];
+        for (uint32_t i = 0; i < st.trap_kinds; i++) ord[i] = i;
+        for (uint32_t i = 1; i < st.trap_kinds; i++) {
+            uint32_t k = ord[i]; int j = (int)i - 1;
+            while (j >= 0 && st.traps[ord[j]].count < st.traps[k].count) {
+                ord[j + 1] = ord[j]; j--;
+            }
+            ord[j + 1] = k;
+        }
+        printf("\nstill trapping, by kind:\n");
+        for (uint32_t i = 0; i < st.trap_kinds; i++) {
+            const em_trap_kind *t = &st.traps[ord[i]];
+            printf("  %-24s %8u   %5.2f%% of all instructions\n",
+                   t->what, t->count,
+                   st.insns ? 100.0 * t->count / st.insns : 0.0);
+        }
+        if (st.traps_other)
+            printf("  %-24s %8u\n", "(other kinds)", st.traps_other);
+    }
     if (impf)
         printf("\nwrote %s\n  %u import stubs, each trapping by name\n",
                imppath, st.imports_used);

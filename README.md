@@ -262,6 +262,44 @@ the limits. A `goto` into a block we never translated would be a lie even if the
 compiler accepted it; dropping the label routes the branch through the
 call-or-trap path, which says what is true.
 
+## What is still trapping, ranked
+
+`emit` reports the remaining gaps by kind, because "8% untranslated" is not
+actionable and "SIMD is 65% of what is left" is:
+
+```
+still trapping, by kind:
+  simd/vfp                     7242    5.19% of all instructions
+  b<cond>.w                    1508    1.08%
+  b.w                           851    0.61%
+  bitfield                      655    0.47%
+  ?                             236    0.17%
+  b                             150    0.11%
+  ldm/stm                        96    0.07%
+  indirect transfer              95    0.07%
+  ...
+```
+
+Reading it in value order rather than count order:
+
+1. **Branch targets — 2,547 instructions (1.82%), and not a decode gap at all.**
+   These branches decode perfectly. They trap because the target is neither a
+   placed label nor a registered function, so there is nothing to name. It is a
+   *discovery* fix — being branched to from outside a collected region makes an
+   address an entry point, exactly as being called does — and it converts every
+   one of them from a trap into a call. Cheapest remaining win by a wide margin.
+2. **Bitfield ops — 655 (0.47%).** `SBFX`/`UBFX`/`BFI`/`BFC`. Mechanical, well
+   defined, bounded.
+3. **General `LDM`/`STM` — 121 (0.09%).** Only the SP-relative forms translate
+   today; an arbitrary base needs the general form.
+4. **`MLA`/`MLS`, `misc`, `sys` — under 200 combined.** Long tail.
+5. **SIMD/VFP — 7,242 (5.19%).** The largest by far and the only genuinely hard
+   one.
+
+Everything above SIMD comes to roughly **2.5%**, which puts a realistic ceiling
+of about **94.5% without touching the vector unit**. After that, NEON is the
+whole remaining problem.
+
 ## Where the runtime earns its keep
 
 Every helper exists because the obvious C is **wrong**, not merely verbose:
@@ -382,12 +420,23 @@ Three things this does not claim:
   relocations, so shape is all there is — which is the cost of the launch-window
   catalogue being where the exclusives are.
 
-## NEON is not the obstacle
+## NEON: a minority of the code, but the majority of what is left
+
+> **Correction.** Earlier revisions of this file put SIMD at 2.45% for this
+> title. That was an undercount caused by a decoder bug: the coprocessor mask
+> `(h1 & 0xEE00) == 0xEC00` matches `0xEC` and `0xED` but not `0xEE`/`0xEF`,
+> which is where VFP's CDP/MCR/MRC forms live. Roughly 2,800 VFP instructions
+> were being counted as *unknown* instead. The real figure is **5.19%**, and
+> the "unknown" figures were correspondingly inflated.
+>
+> It surfaced from the trap breakdown below: 2.16% of instructions decoding to
+> `"?"` is a number that demands an explanation, and there wasn't one.
 
 The usual reason given for the Vita being a hard recompilation target is its
-NEON vector unit. Measured across the corpus, **NEON/SIMD is 0.71–5.34% of
-instructions** — 2.45% in *Uncharted: Fight for Fortune*. Recompiling the
-integer core, which is ordinary well-documented ARMv7, gets you most of a game.
+NEON vector unit. At **5.19%** of instructions it is still a small minority, and
+recompiling the integer core — ordinary, well-documented ARMv7 — gets most of a
+game. But it is now **65% of everything still untranslated**, so it is the wall
+between roughly 95% and anything beyond.
 
 Every module in the corpus is **Thumb-2 dominant**, with a real ARM minority
 that makes mode tracking mandatory rather than optional.

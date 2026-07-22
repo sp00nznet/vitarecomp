@@ -8,6 +8,19 @@
 
 #include <stdio.h>
 
+/* What is still trapping, by kind.
+ *
+ * "31% untranslated" is not actionable; "MOVT is 40% of what is left" is. This
+ * table is what turns the question of where to spend effort next from a guess
+ * into a ranked list — and it is how MOVT was found to be worth far more than
+ * its instruction count suggested. */
+#define EM_MAX_TRAP_KINDS 64
+
+typedef struct {
+    const char *what;      /* mnemonic, or the class when unnamed */
+    uint32_t    count;
+} em_trap_kind;
+
 typedef struct {
     uint32_t funcs;
     uint32_t insns;
@@ -16,6 +29,10 @@ typedef struct {
     uint32_t literals;     /* literal-pool loads folded to constants */
     uint32_t import_calls; /* call sites bound to a firmware import  */
     uint32_t imports_used; /* distinct imports actually reached      */
+
+    em_trap_kind traps[EM_MAX_TRAP_KINDS];
+    uint32_t     trap_kinds;
+    uint32_t     traps_other;   /* beyond the table's capacity */
 } emit_stats;
 
 /* Emit discovered functions to `out`. `limit` caps the number emitted (0 for

@@ -437,10 +437,21 @@ static uint32_t thumb_expand_imm(uint32_t imm12) {
 static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
     o->raw = ((uint32_t)h1 << 16) | h2;
 
-    /* Advanced SIMD and VFP occupy the coprocessor space. They are identified
-     * as a class rather than decoded, so `cover` can report how much of a given
-     * module actually needs them before anyone commits to implementing them. */
-    if ((h1 & 0xEF00) == 0xEF00 || (h1 & 0xEE00) == 0xEC00) {
+    /* Advanced SIMD and VFP occupy the coprocessor space: bits 15:13 are 111
+     * and bits 11:10 are 11, which is exactly `(h1 & 0xEC00) == 0xEC00`.
+     *
+     * An earlier mask of `(h1 & 0xEE00) == 0xEC00` matched only 0xEC and 0xED,
+     * missing the whole of 0xEE and 0xEF — which is where VFP's CDP/MCR/MRC
+     * forms live, and they are the bulk of it. Those ~2,800 instructions were
+     * reported as UNKNOWN rather than SIMD, so every earlier SIMD percentage
+     * this toolkit printed was an undercount and every "unknown" figure was
+     * correspondingly inflated.
+     *
+     * Worth noting that this made the tool look better than it was on one axis
+     * and worse on another, which is why the trap breakdown by kind was what
+     * finally surfaced it: 2.16% of instructions decoding to "?" is a number
+     * that demands an explanation, and there wasn't one. */
+    if ((h1 & 0xEC00) == 0xEC00) {
         set(o, A_SIMD, "simd/vfp");
         return;
     }
@@ -679,7 +690,30 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
         return;
     }
 
-    /* Shift by register, and the wide sign/zero extends. */
+    /* The wide sign/zero extends: rn == 15 distinguishes them from the
+     * extend-and-add forms that share the encoding. */
+    if ((h1 & 0xFF80) == 0xFA00 && (h1 & 0x000F) == 0x000F &&
+        (h2 & 0xF080) == 0xF080) {
+        static const arm_op ex[4] = { OP_SXTH, OP_UXTH, OP_SXTB, OP_UXTB };
+        o->op = ex[(h1 >> 4) & 3];
+        o->rd = (h2 >> 8) & 0xF;
+        o->rm = h2 & 0xF;
+        set(o, A_ALU, "extend.w");
+        return;
+    }
+
+    /* Table branch: a jump table in one instruction, indexing a byte or
+     * halfword array to compute a forward branch. It is a computed transfer
+     * that discovery cannot follow, and is named here rather than left unknown
+     * so its cost is visible. */
+    if ((h1 & 0xFFF0) == 0xE8D0 && (h2 & 0xFFE0) == 0xF000) {
+        o->rn = h1 & 0xF;
+        o->rm = h2 & 0xF;
+        set(o, A_INDIRECT, "tbb/tbh");
+        return;
+    }
+
+    /* Shift by register. */
     if ((h1 & 0xFF80) == 0xFA00 && (h2 & 0xF0F0) == 0xF000) {
         static const arm_op sh[4] = { OP_LSL, OP_LSR, OP_ASR, OP_ROR };
         o->op = sh[(h1 >> 5) & 3];
