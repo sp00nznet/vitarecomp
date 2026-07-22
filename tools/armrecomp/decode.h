@@ -53,13 +53,13 @@ typedef enum {
  * enough to emit, and becomes a named run-time trap rather than silence. */
 typedef enum {
     OP_NONE = 0,
-    OP_MOV, OP_MVN, OP_ADD, OP_ADC, OP_SUB, OP_SBC, OP_RSB,
+    OP_MOV, OP_MOVT, OP_MVN, OP_ADD, OP_ADC, OP_SUB, OP_SBC, OP_RSB,
     OP_AND, OP_ORR, OP_EOR, OP_BIC,
     OP_CMP, OP_CMN, OP_TST,
     OP_LSL, OP_LSR, OP_ASR, OP_ROR,
     OP_MUL,
-    OP_LDR, OP_LDRB, OP_LDRH, OP_LDRSB, OP_LDRSH,
-    OP_STR, OP_STRB, OP_STRH,
+    OP_LDR, OP_LDRB, OP_LDRH, OP_LDRSB, OP_LDRSH, OP_LDRD,
+    OP_STR, OP_STRB, OP_STRH, OP_STRD,
     OP_PUSH, OP_POP,
     OP_B, OP_BL, OP_BX, OP_BLX,
     OP_ADR,
@@ -90,6 +90,7 @@ typedef struct {
     /* --- operands (phase 5) ------------------------------------------------ */
     arm_op     op;
     int8_t     rd, rn, rm, rt;  /* ARM_NO_REG when unused                */
+    int8_t     rt2;             /* second transfer register: LDRD/STRD    */
     uint32_t   imm;
     uint8_t    has_imm;
     uint8_t    sets_flags;      /* writes NZCV                           */

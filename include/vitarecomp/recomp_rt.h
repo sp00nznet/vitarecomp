@@ -131,4 +131,8 @@ void vita_trap_unimpl(uint32_t addr, uint32_t raw, const char *what);
 void vita_trap_indirect(uint32_t addr, uint32_t target);
 void vita_trap_import(uint32_t addr, uint32_t nid);
 
+/* Total traps hit. Only meaningful under VITARECOMP_TRACE=1, where execution
+ * continues past them; otherwise the first one ends the program. */
+uint32_t vita_trap_count(void);
+
 #endif /* VITARECOMP_RECOMP_RT_H */

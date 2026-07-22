@@ -301,6 +301,14 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             if (in->sets_flags) fprintf(f, "    vita_flags_nz(%s);\n", reg_name(in->rd));
             break;
 
+        case OP_MOVT:
+            /* Top half written, bottom half preserved. One line, and the
+             * difference between a program that builds correct pointers and one
+             * whose every constructed address is missing its high 16 bits. */
+            fprintf(f, "    %s = (%s & 0x0000FFFFu) | 0x%08Xu;\n",
+                    reg_name(in->rd), reg_name(in->rd), in->imm << 16);
+            break;
+
         case OP_MVN:
             operand2(o2, sizeof(o2), in);
             fprintf(f, "    %s = ~(%s);\n", reg_name(in->rd), o2);
@@ -429,6 +437,28 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             fprintf(f, "    %s = ", reg_name(in->rt));
             fprintf(f, rd, addr);
             fprintf(f, ";\n");
+            break;
+        }
+
+        case OP_LDRD: case OP_STRD: {
+            if (in->rn == ARM_NO_REG || in->rt2 == ARM_NO_REG) { ok = 0; break; }
+            /* Two adjacent words. The offset is added or subtracted per the U
+             * bit, and the second register is always four bytes above the
+             * first regardless of direction. */
+            char base[64];
+            if (in->imm)
+                snprintf(base, sizeof(base), "%s %c 0x%X",
+                         reg_name(in->rn), in->mem_add ? '+' : '-', in->imm);
+            else
+                snprintf(base, sizeof(base), "%s", reg_name(in->rn));
+
+            if (in->op == OP_LDRD) {
+                fprintf(f, "    %s = vita_read32(%s);\n", reg_name(in->rt), base);
+                fprintf(f, "    %s = vita_read32((%s) + 4);\n", reg_name(in->rt2), base);
+            } else {
+                fprintf(f, "    vita_write32(%s, %s);\n", base, reg_name(in->rt));
+                fprintf(f, "    vita_write32((%s) + 4, %s);\n", base, reg_name(in->rt2));
+            }
             break;
         }
 

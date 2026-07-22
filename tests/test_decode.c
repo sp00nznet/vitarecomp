@@ -227,6 +227,28 @@ static void test_t32_operands(void) {
     in = dec(ARM_T32, BASE);
     assert(in.op == OP_STR && in.rt == 0 && in.rn == 1);
 
+    /* movt r0, #0x8100 — writes the TOP half only.
+     *
+     * MOVW/MOVT is how ARM builds a 32-bit address. Leaving MOVT untranslated
+     * costs every constructed pointer its high 16 bits, which a trace of
+     * module_start showed as indirect branches to 0x00000000. */
+    /* rd is bits 11:8 of the SECOND halfword, so 0x1000 means r0. The 16-bit
+     * literal is assembled from imm4:i:imm3:imm8 spread across both halfwords:
+     * 8:0:1:0x00 gives 0x8100. */
+    put16(0, 0xF2C8); put16(2, 0x1000);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOVT && in.rd == 0 && in.imm == 0x8100);
+
+    /* strd r1, r0, [sp] — bit 6 separates dual from multiple. An earlier mask
+     * kept that bit and so excluded every LDRD/STRD from decoding at all. */
+    put16(0, 0xE9CD); put16(2, 0x1000);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_STRD && in.rn == 13 && in.rt == 1 && in.rt2 == 0);
+
+    put16(0, 0xE9DD); put16(2, 0x1200);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_LDRD && in.rn == 13 && in.rt == 1 && in.rt2 == 2);
+
     /* mul.w r0, r1, r2 — ra == 15 distinguishes it from MLA. */
     put16(0, 0xFB01); put16(2, 0xF002);
     in = dec(ARM_T32, BASE);

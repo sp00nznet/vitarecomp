@@ -82,9 +82,12 @@ obstacle on this platform.
 - [x] **32-bit Thumb operand decoding** — data processing (shifted register and
       modified immediate), `MOVW`/`ADDW`/`SUBW`, load/store, shift-by-register,
       `MUL`, `PUSH.W`/`POP.W`. Translation **69.80% → 86.18%**
+- [x] **`MOVT` and `LDRD`/`STRD`** — translation **86.18% → 89.44%**
+- [x] **A host**: ELF segment loader, guest memory, stack, and `module_start`
+      called for real. `VITARECOMP_TRACE=1` logs and continues instead of
+      aborting, so one run names many missing pieces
 - [ ] ARM (A32) operand decoding — a small minority of this corpus
-- [ ] `MOVT`, `MLA`/`MLS`, bitfield ops — decoded and classified, deliberately
-      left trapping rather than approximated
+- [ ] `MLA`/`MLS`, bitfield ops — decoded and classified, still trapping
 
 ## Phase 6 — the runtime and HLE (in progress)
 

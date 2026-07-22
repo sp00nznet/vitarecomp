@@ -504,7 +504,24 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
         return;
     }
 
-    /* Load/store multiple and dual. LDM with the PC in the list is a return. */
+    /* Load/store DUAL. Bit 6 separates these from the multiple forms below, and
+     * the earlier mask excluded them by keeping that bit — so every LDRD/STRD
+     * fell through to unknown. They are common: compilers use them to move
+     * 64-bit values and adjacent struct fields in one instruction. */
+    if ((h1 & 0xFE40) == 0xE840 && (h1 & 0x0120) != 0x0000) {
+        int load = (h1 & 0x0010) != 0;
+        o->op  = load ? OP_LDRD : OP_STRD;
+        o->rn  = h1 & 0xF;
+        o->rt  = (h2 >> 12) & 0xF;
+        o->rt2 = (h2 >> 8) & 0xF;
+        o->imm = (uint32_t)(h2 & 0xFF) * 4u;   /* scaled by 4 */
+        o->has_imm = 1;
+        o->mem_add = (h1 & 0x0080) != 0;       /* U bit */
+        set(o, load ? A_LOAD : A_STORE, load ? "ldrd" : "strd");
+        return;
+    }
+
+    /* Load/store multiple. LDM with the PC in the list is a return. */
     if ((h1 & 0xFE40) == 0xE800) {
         int load = (h1 & 0x0010) != 0;
         if (load && (h2 & 0x8000)) { set(o, A_RETURN, "ldm {..,pc}"); return; }
@@ -605,10 +622,15 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
             return;
         }
         if (form == 0xF2C0) {                     /* movt                     */
+            /* MOVT writes the top half and preserves the bottom, which is not
+             * a move — but it IS trivially expressible, and it is load-bearing:
+             * MOVW/MOVT is how ARM builds a 32-bit address, so leaving it
+             * untranslated costs every constructed pointer its high 16 bits.
+             * A trace of module_start showed the result — indirect branches to
+             * 0x00000000 — which is what promoted this from "deliberately
+             * trapped" to "the highest-value instruction remaining". */
+            o->op = OP_MOVT;
             o->imm = imm | ((uint32_t)(h1 & 0xF) << 12);
-            /* Deliberately left without an op: MOVT writes only the top half
-             * and preserves the bottom, so translating it as a move would
-             * silently discard the low 16 bits the preceding MOVW just set. */
             set(o, A_ALU, "movt");
             return;
         }
@@ -794,7 +816,7 @@ int arm_decode(const uint8_t *code, uint32_t code_addr, uint32_t code_len,
     /* Registers default to "absent" rather than r0, so an emitter that reads a
      * field the decoder never filled produces an obvious error instead of a
      * silent reference to the wrong register. */
-    out->rd = out->rn = out->rm = out->rt = ARM_NO_REG;
+    out->rd = out->rn = out->rm = out->rt = out->rt2 = ARM_NO_REG;
     out->cond = ARM_COND_AL;
 
     if (addr < code_addr) return 0;

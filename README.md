@@ -197,9 +197,40 @@ architecture uses instead of spending encoding space: `rn == 15` turns `ORR`
 into `MOV` and `ORN` into `MVN`; `rd == 15` with `S` set turns
 `AND`/`EOR`/`ADD`/`SUB` into `TST`/`TEQ`/`CMN`/`CMP`.
 
-`MOVT` is decoded but deliberately **not** translated — it writes only the top
-half and preserves the bottom, so emitting it as a move would silently discard
-the low 16 bits the preceding `MOVW` just set.
+## Running it is what found the next bug
+
+The recompiled `module_start` was given a host — ELF segments loaded into guest
+memory at their own vaddrs, a stack, and a call — and traced. The result was
+immediate and unambiguous:
+
+```
+TRACE unimpl  0x8100B92A  raw 0xF2C81262  movt
+TRACE unimpl  0x8100B930  raw 0xF2C81C4B  movt
+TRACE indirect 0x8100B936 -> 0x00000000
+TRACE unimpl  0x8100B93C  raw 0xF2C81056  movt
+```
+
+**`MOVT` dominated, and the indirect branches to `0x00000000` were the
+consequence.** ARM builds a 32-bit address with a `MOVW`/`MOVT` pair — low half
+then high half — so leaving `MOVT` untranslated costs every constructed pointer
+its top 16 bits, and every computed branch lands near zero.
+
+It had been left trapping on the reasoning that "emitting it as a move would
+discard the low 16 bits". That was right about the hazard and wrong about the
+conclusion: the correct translation is one line,
+`rd = (rd & 0xFFFF) | (imm << 16)`. Refusing to approximate had turned into
+refusing to implement, and only running the thing showed the cost.
+
+The same trace surfaced `LDRD`/`STRD` falling through as unknown — bit 6
+separates the dual forms from the multiple forms, and the mask kept it, so they
+never matched. After both fixes the `movt` traps are gone from the trace
+entirely.
+
+**`VITARECOMP_TRACE=1`** switches traps from abort to log-and-continue. It is a
+discovery aid and is labelled as one: past the first missing piece the machine
+state is wrong and every later trap is reached down a path that would not have
+happened on hardware. What it is good for is one run naming many missing pieces
+instead of one.
 
 ## Where the runtime earns its keep
 
