@@ -3,6 +3,20 @@
 **A static-recompilation toolkit for PlayStation Vita games — turning ARM into
 native C, not emulating it.**
 
+> **Progress — 2026-08-09.** Phases 1–5 done, phase 6 (HLE) in progress. The
+> full pipeline runs end to end: SELF → ELF → decode → discover → emit →
+> compile → link → run, with no key material anywhere in it. On *Uncharted:
+> Fight for Fortune*, **97.87% of instructions translate**; the rest emit named
+> traps, never silence. What is left: true NEON (~0.94%), branch targets not yet
+> promoted to functions (0.65%), bitfield ops (0.47%), and a small tail.
+>
+> **One verification is outstanding:** the generated C is confirmed to compile,
+> link and run at 100 functions, but not re-confirmed at 1,500 across the seven
+> toolkit changes since (VFP, dispatch, wide branches, list forms). The
+> translation percentages come straight from the emitter and are solid; "it
+> still builds at scale" is currently an assumption. Re-running that check is the
+> first resume task — it needs the QA proto on `W:\`, which must be mounted.
+
 The Vita has one good emulator (Vita3K) and, as far as we can find, **no static
 recompiler**. That gap is worth closing, and the Vita is a better target than its
 reputation suggests:
