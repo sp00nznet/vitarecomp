@@ -15,7 +15,7 @@ decodable ARM, with no key material.
 - [x] Synthetic `ctest` suite, with a guard against `NDEBUG` silently disabling it
 
 **Established:** QA/prototype builds carry plaintext, zlib-compressed segments.
-The corpus needs no decryption. See [`docs/DECRYPT.md`](docs/DECRYPT.md).
+The corpus needs no decryption. See [`DECRYPT.md`](DECRYPT.md).
 
 ## Phase 2 — inflate and reassemble ✅
 
@@ -111,7 +111,7 @@ obstacle on this platform.
 - [x] CPU state, memory, semantic helpers (landed with phase 5)
 - [x] **NID resolution against the MIT `vita-headers` database** — 519 of 524
       imports resolved (99.0%) from 9,274 known functions
-- [x] The HLE work list sized and shaped: see [`docs/HLE.md`](docs/HLE.md)
+- [x] The HLE work list sized and shaped: see [`HLE.md`](HLE.md)
 - [x] **Bind imports.** A call to a stub emits `vita_hle_sceGxmDraw()` rather
       than `vita_func_814BB75C()`, and a generated companion file gives every
       import a default that traps by name — so the output links from the first

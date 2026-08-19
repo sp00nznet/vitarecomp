@@ -1,35 +1,27 @@
 # vitarecomp
 
-**A static-recompilation toolkit for PlayStation Vita games — turning ARM into
-native C, not emulating it.**
+### *The Vita has one good emulator. It has no static recompiler.*
 
-> **Progress — 2026-08-09.** Phases 1–5 done, phase 6 (HLE) in progress. The
-> full pipeline runs end to end: SELF → ELF → decode → discover → emit →
-> compile → link → run, with no key material anywhere in it. On *Uncharted:
-> Fight for Fortune*, **97.87% of instructions translate**; the rest emit named
-> traps, never silence. What is left: true NEON (~0.94%), branch targets not yet
-> promoted to functions (0.65%), bitfield ops (0.47%), and a small tail.
->
-> **One verification is outstanding:** the generated C is confirmed to compile,
-> link and run at 100 functions, but not re-confirmed at 1,500 across the seven
-> toolkit changes since (VFP, dispatch, wide branches, list forms). The
-> translation percentages come straight from the emitter and are solid; "it
-> still builds at scale" is currently an assumption. Re-running that check is the
-> first resume task — it needs the QA proto on `W:\`, which must be mounted.
+> Static recompilation toolkit for PlayStation Vita titles.
+> Turn ARM into native C. No emulator required, no keys required.
 
-The Vita has one good emulator (Vita3K) and, as far as we can find, **no static
-recompiler**. That gap is worth closing, and the Vita is a better target than its
-reputation suggests:
+---
 
-- **One documented CPU.** A quad-core ARM Cortex-A9 running ARMv7-A. ARM is the
-  most widely documented architecture there is, and unlike the PSP's Allegrex it
-  has no vendor-specific opcode divergences to rediscover.
-- **A documented OS boundary.** Games call `sceKernel*` / `sceGxm*` / `sceCtrl*`
-  by NID through a module import table. That is a *library* surface, not a
-  hardware surface, which means it can be implemented as HLE C rather than
-  emulated — and the NID→name mapping is published and MIT-licensed.
-- **A corpus that needs no decryption.** See below; this is the finding that
-  shapes the whole project.
+## What Is This?
+
+**vitarecomp** is an open-source toolkit that provides the analysis tools,
+recompiler, and runtime needed to **statically recompile PlayStation Vita games
+into native executables**.
+
+Instead of interpreting or dynamically recompiling ARM instructions at runtime
+(what Vita3K does), we take the opposite approach: **translate everything ahead
+of time** into C that compiles with any modern compiler on any modern platform.
+
+This is the same philosophy behind:
+- [N64Recomp](https://github.com/N64Recomp/N64Recomp) (N64 → native)
+- [UnleashedRecomp](https://github.com/hedge-dev/UnleashedRecomp) (Xbox 360 → native)
+- [ps3recomp](https://github.com/sp00nznet/ps3recomp) (PS3 → native)
+- [psprecomp](https://github.com/sp00nznet/psprecomp) (PSP → native)
 
 `vitarecomp` is the reusable toolkit. Games brought up on it live in separate
 repos that consume this one as a submodule — that split is deliberate: the
@@ -39,7 +31,51 @@ toolkit is the thing other people fork to recompile *their* Vita game.
 > material are all `.gitignore`d. This repo is the recompiler, the runtime, and
 > docs — bring your own dump.
 
-## How it works
+## Why Vita?
+
+The Vita is a better target than its reputation suggests:
+
+- **One documented CPU.** A quad-core ARM Cortex-A9 running ARMv7-A. ARM is the
+  most widely documented architecture there is, and unlike the PSP's Allegrex it
+  has no vendor-specific opcode divergences to rediscover.
+- **A documented OS boundary.** Games call `sceKernel*` / `sceGxm*` / `sceCtrl*`
+  by NID through a module import table. That is a *library* surface, not a
+  hardware surface, which means it can be implemented as HLE C rather than
+  emulated — and the NID→name mapping is published and MIT-licensed.
+- **A corpus that needs no decryption.** Every segment of every QA/prototype
+  build measured so far is plaintext, zlib-compressed only. The whole pipeline
+  can be built and validated with no key material entering the picture. See
+  [docs/CORPUS.md](docs/CORPUS.md).
+
+## The Challenge
+
+| Component | What It Is | Why It's Hard |
+|-----------|-----------|---------------|
+| **Cortex-A9** | ARMv7-A, Thumb-2 dominant | Two instruction sets interleaved; one bad width desynchronises every instruction after it |
+| **NEON** | 128-bit SIMD | The only genuinely hard piece left — but 0.94% of instructions, not the wall its reputation suggests |
+| **SELF container** | SCE-wrapped ELF | Not the PS3 layout; every field after `0x20` is shifted by `0x10` |
+| **`.sce_module_info`** | Module metadata | `e_entry` points *at this structure*, not at code — and it mixes segment-relative with absolute addressing |
+| **`sceGxm`** | The GPU API | 107 imported functions, one of which is a shader compiler |
+| **`ET_SCE_EXEC`** | Statically linked modules | No relocations to mine, so function-pointer recovery is heuristic — and this is the entire launch window |
+
+## Architecture
+
+```
+include/vitarecomp/   runtime API — cpu, mem, dispatch, vfp, loader
+src/                  runtime — CPU state, memory, semantic helpers, traps
+tools/armrecomp/      the toolkit:
+                        container.c  SELF / ELF / velf parsing
+                        inflate.c    DEFLATE + zlib, written not vendored
+                        decode.c     ARMv7-A + Thumb-2 decoder
+                        module.c     .sce_module_info, import/export tables
+                        analyze.c    function discovery
+                        nids.c       NID → name against vita-headers
+                        emit.c       ARM → C
+tests/                ctest — synthetic, no game data
+docs/                 the detail
+```
+
+## How It Works
 
 ```
   dump / .vpk ──► armrecomp ──► eboot.bin / *.suprx      peel the container
@@ -47,7 +83,7 @@ toolkit is the thing other people fork to recompile *their* Vita game.
                       │
                       ▼
               ┌────────────────────┐   segment table is PLAINTEXT; segments are
-              │  inflate  (phase 2)│   zlib. QA builds need no keys at all.
+              │  inflate           │   zlib. QA builds need no keys at all.
               └────────────────────┘   SELF ──► a plain ELF32 ARM module
                       │
                       ▼
@@ -66,618 +102,71 @@ toolkit is the thing other people fork to recompile *their* Vita game.
               native executable — the recompiled game runs
 ```
 
-## Status — phase 1 (the container stack) is done and validated
+Stage-by-stage detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Pointed at a real module, `armrecomp` identifies every layer and reports exactly
-what stands between here and decodable ARM:
+## Status
 
-```
-$ armrecomp info eboot.bin
-size:     1680560 bytes
-format:   SELF (SCE\0-wrapped ELF)
+**Phases 1–5 complete, phase 6 (HLE) in progress.** The full pipeline runs end
+to end — SELF → ELF → decode → discover → emit → compile → link → run — with no
+key material anywhere in it.
 
-SCE header:
-  version         3
-  header len      0x1000
-  elf filesize    3522160 bytes (decrypted)
-  auth id         0x2F00000000000001
-  self type       8
-  sys version     0x1010000000000
+| Phase | What | Status |
+|---|---|---|
+| **1 — Container stack** | SCE/SELF, appinfo, ELF32, program headers, segment table; bounds-checked, named refusal for PFS retail dumps, encryption flag cross-checked against zlib headers | ✅ Complete |
+| **2 — Inflate & reassemble** | DEFLATE + zlib written not vendored; **15/15 corpus modules extract and round-trip**, 236 KB → 53 MB | ✅ Complete |
+| **3 — Decoder** | ARMv7-A + Thumb-2, width determination, control flow, IT blocks, NEON/VFP classed; `armrecomp cover` over 16 modules | ✅ Complete |
+| **4 — Discovery** | `.sce_module_info`, import/export tables, recursive descent carrying mode state, prologue-filtered pointer-shape recovery; 18,978 functions | ✅ Complete |
+| **5 — Emitter** | ARM → readable C, literal folding, run-time dispatch, scalar VFP, wide branches. **Generated C compiles, links, and runs** | ✅ Complete |
+| **6 — Runtime & HLE** | Runtime landed; NID resolution 519/524 (99.0%); imports bound so every firmware call traps *by name*. `sceGxm` / `sceKernel` / `SceLibc` bodies outstanding | 🔨 In progress |
 
-ELF:
-  type            ET_SCE_RELEXEC (0xFE04)
-  machine         EM_ARM
-  entry           0x002B36E8
-  segments        5
-
-segments:
-  #   type         flags  vaddr      filesz     memsz
-  0   LOAD         r-x    0x81000000 3053164    3053164
-  1   LOAD         rw-    0x812EA000 7044       1204744
-  2   SCE_RELA     ---    0x00000000 446924     0
-  3   SCE_RELA     ---    0x00000000 4480       0
-  4   SCE_VERSION  ---    0x00000000 10298      0
-
-segment encryption:
-  0   1501685    bytes  zlib      plain      (zlib header verified)
-  ...
-no encrypted segments, verified against zlib headers — this
-module can go straight to the decoder once inflated.
-```
-
-**What works today**
-
-- ✅ **The container stack** (`container.c`) — SCE/SELF header, appinfo, ELF32
-  and program headers, and the segment table, each bounds-checking every offset
-  it reads out of the file rather than walking off the end of it.
-- ✅ **Refusing what it cannot parse.** A retail NoNpDrm eboot is ciphertext from
-  byte zero; it is reported by name, not parsed into plausible garbage.
-- ✅ **A verified plaintext claim.** The encryption flag is cross-checked against
-  the actual segment bytes (zlib CMF/FLG, including the header checksum), so the
-  report says "plain *and the bytes agree*" — and prints a loud disagreement line
-  if they ever do not. See [`docs/DECRYPT.md`](docs/DECRYPT.md).
-- ✅ **`ctest`, all synthetic** — no game data, no dump, no key material in the
-  repo or in the tests.
-
-- ✅ **DEFLATE and zlib, written not vendored** (`inflate.c`, RFC 1951/1950) —
-  canonical Huffman decoding, all three block types, overlapping back-references
-  handled byte-at-a-time, and the Adler-32 trailer verified. Validated against a
-  fixed-Huffman *encoder* built from the spec in the test file, so the decoder is
-  checked against an independent implementation rather than a pasted blob.
-- ✅ **`armrecomp extract` — SELF in, plain ELF32 out.** **15/15 modules in the
-  corpus extract and round-trip back through `info`**, from 236 KB
-  (`libfios2.suprx`) to 53 MB (*Volume*).
-
-- ✅ **An ARMv7 + Thumb-2 decoder** (`decode.c`) — both instruction sets, with
-  correct width determination, control-flow extraction (targets, conditionality,
-  interworking), IT blocks distinguished from the NOP hints that share their
-  encoding, and NEON/VFP identified as a class. Operands land in phase 5.
-- ✅ **`armrecomp cover`** — coverage, class histogram, and instruction-set
-  determination over 16 modules.
-
-- ✅ **`.sce_module_info`, import and export tables** (`module.c`) — and with
-  them `armrecomp funcs`, which reports the HLE work list derived from the
-  module's own import table rather than guessed at.
-- ✅ **Function discovery** (`analyze.c`) — recursive descent carrying
-  instruction-set state, seeded from `module_start`, the export table, a linear
-  harvest of call targets, and prologue-filtered pointer-shape recovery.
-
-- ✅ **The emitter** (`emit.c`) and the runtime (`src/`, `include/vitarecomp/`).
-  **The generated C compiles, links, and runs.**
-
-**Not started:** the HLE layer. This is phase 5 of six.
-
-## The pipeline runs end to end
-
-```
-$ armrecomp emit uncharted.elf recomp_funcs.c 100 path/to/vita-headers/db/360
-  functions     100
-  instructions  8827
-  translated    7607  (86.18%)
-  trapped       1220  (13.82%)
-  literals      24  folded to constants
-  import calls  49  bound to firmware
-
-$ cmake --build build --config Release && ./gencheck
-runtime up: sp=0x81800000  bad_access=0
-lsl(1,32)=0 (ARM says 0, naive C gives 1)
-asr(0x80000000,32)=0xFFFFFFFF (ARM says all ones)
-5-3: c=1 (ARM sets carry when there is NO borrow)
-3-5: c=0
-linked ok
-```
-
-That is **SELF → ELF → decode → discover → emit → compile → link → run**, with
-no key material anywhere in it.
-
-The output is meant to be read:
-
-```c
-/* ---------------------------------------------------------------
- * vita_func_8100B910  --  4 instructions, 8 bytes
- * ------------------------------------------------------------- */
-void vita_func_8100B910(void) {
-    /* 8100B910  bl               */
-    vita_func_8100B918();
-    /* 8100B914  nop              */
-    /* nop */
-}
-```
-
-## ThumbExpandImm, and why it is worth a test
-
-32-bit Thumb encodes a 32-bit constant in twelve bits, and **two entirely
-different encodings share the field**, selected by its top two bits. Clear, and
-the low byte is replicated into a pattern; otherwise the field is a
-rotate-right of a value whose top bit is implicit and always set.
-
-Reading it as a plain 12-bit integer is the obvious mistake and a quiet one:
-small constants land in the first case with pattern `00`, where the naive
-reading is *correct*. Everything above `0xFF` is then wrong. The implicit top
-bit is the other trap — forgetting it leaves every rotated constant short by
-`0x80`.
-
-Two more that only a test catches, both found that way here:
-
-- **The immediate/register split is not a single bit.** `0xEA`/`0xEB` and
-  `0xF0`/`0xF1` both have bit 15 set, so testing it classifies every
-  shifted-register instruction as an immediate one and reads operand 2 from the
-  wrong fields.
-- **`MOVW` sets bit 6**, so a group mask that keeps that bit excludes `MOVW`
-  from its own group entirely.
-
-Four operations also change identity when a register field is `r15`, which the
-architecture uses instead of spending encoding space: `rn == 15` turns `ORR`
-into `MOV` and `ORN` into `MVN`; `rd == 15` with `S` set turns
-`AND`/`EOR`/`ADD`/`SUB` into `TST`/`TEQ`/`CMN`/`CMP`.
-
-## Running it is what found the next bug
-
-The recompiled `module_start` was given a host — ELF segments loaded into guest
-memory at their own vaddrs, a stack, and a call — and traced. The result was
-immediate and unambiguous:
-
-```
-TRACE unimpl  0x8100B92A  raw 0xF2C81262  movt
-TRACE unimpl  0x8100B930  raw 0xF2C81C4B  movt
-TRACE indirect 0x8100B936 -> 0x00000000
-TRACE unimpl  0x8100B93C  raw 0xF2C81056  movt
-```
-
-**`MOVT` dominated, and the indirect branches to `0x00000000` were the
-consequence.** ARM builds a 32-bit address with a `MOVW`/`MOVT` pair — low half
-then high half — so leaving `MOVT` untranslated costs every constructed pointer
-its top 16 bits, and every computed branch lands near zero.
-
-It had been left trapping on the reasoning that "emitting it as a move would
-discard the low 16 bits". That was right about the hazard and wrong about the
-conclusion: the correct translation is one line,
-`rd = (rd & 0xFFFF) | (imm << 16)`. Refusing to approximate had turned into
-refusing to implement, and only running the thing showed the cost.
-
-The same trace surfaced `LDRD`/`STRD` falling through as unknown — bit 6
-separates the dual forms from the multiple forms, and the mask kept it, so they
-never matched. After both fixes the `movt` traps are gone from the trace
-entirely.
-
-**`VITARECOMP_TRACE=1`** switches traps from abort to log-and-continue. It is a
-discovery aid and is labelled as one: past the first missing piece the machine
-state is wrong and every later trap is reached down a path that would not have
-happened on hardware. What it is good for is one run naming many missing pieces
-instead of one.
-
-## Indirect transfers, and a bug only scale revealed
-
-With `MOVT` fixed the trace stopped reporting untranslated instructions and
-started reporting what the program was actually trying to do: **transfer
-control through a register.** `module_start` does not call the real entry point,
-it passes it as a *pointer* — the same shape psprecomp documented on PSP — and
-C++ virtual dispatch does the rest. The module has ~18,000 such sites.
-
-A recompiled program has no program counter, so `BX r3` cannot be translated
-statically; the destination is a value known only at run time. The answer is a
-sorted address→function table and a binary search
-([`dispatch.c`](src/dispatch.c)). A hit is a real transfer; a miss is a named
-trap, never a silent return — jumping somewhere untranslated has to stop,
-because continuing runs the caller with the callee's work undone.
-
-Masking bit 0 in one place matters here: every pointer to Thumb code carries it
-as an instruction-set marker, and a lookup that does not mask misses *every*
-entry by one.
-
-Scaling the emit from 100 to 1,500 functions also exposed a generated-code bug
-that smaller runs could not. Labels were recorded the moment a branch target was
-seen inside a function's extent, but the block behind one is only collected if
-the walk reaches it — and the walk can stop short at three separate limits. The
-result was `goto L_81521D2C` with no such label, which does not compile.
-
-The fix is to prune labels against what was actually emitted rather than raise
-the limits. A `goto` into a block we never translated would be a lie even if the
-compiler accepted it; dropping the label routes the branch through the
-call-or-trap path, which says what is true.
-
-## What is still trapping, ranked
-
-`emit` reports the remaining gaps by kind, because "8% untranslated" is not
-actionable and "SIMD is 65% of what is left" is:
+**Translation rate on *Uncharted: Fight for Fortune*: 97.87% of instructions.**
+The rest emit named traps, never silence:
 
 ```
 still trapping, by kind:
   simd/vfp                          2207    1.58% of all instructions
   branch: target not a function      906    0.65%
-  bitfield                          655    0.47%
-  ?                                 236    0.17%
-  ldm/stm                            96    0.07%
-  indirect transfer                  95    0.07%
-  misc                               88    0.06%
-  sys                                64    0.05%
+  bitfield                           655    0.47%
+  ?                                  236    0.17%
+  ldm/stm                             96    0.07%
+  indirect transfer                   95    0.07%
+  misc                                88    0.06%
+  sys                                 64    0.05%
 ```
 
-### Two wrong guesses before the right measurement
-
-The 2,547 trapping branches looked like a discovery problem — targets that were
-never registered as functions. Two plausible fixes came first, and both were
-wrong:
-
-1. **An inconsistency between `bound` and `fn->end`** in the emitter's collect
-   pass, where the walk used one and the labelling used the other. That was a
-   genuine bug and worth fixing, but it moved translation by 0.01%.
-2. **Branch targets needing promotion to functions.** Reasonable, and it is
-   still true for a residue — but it was not what the bulk of them were.
-
-Making the emitter report *why* each branch trapped settled it in one run: only
-177 were the not-a-function case. The other 2,359 were something else entirely
-— the decoder set the class, the mnemonic, and a correctly computed target for
-`b.w` and `b<cond>.w`, and never set `op`. The emitter's translation switch is
-keyed on `op`, so every wide branch decoded perfectly and then fell through to a
-trap. Two missing assignments, worth **1.8% of the entire module**.
-
-The lesson is the one this project keeps relearning in new costumes: the
-plausible explanation and the true one are different things, and instrumenting
-the tool to say which case it hit is cheaper than reasoning about which case it
-probably hit.
-
-Reading what remains in value order rather than count order:
-
-1. **Advanced SIMD — 1,647 (1.18%), of which ~1,300 is true NEON.** The only
-   genuinely hard piece left.
-
-   Splitting this bucket paid twice. The first split found 82% of it was scalar
-   VFP. Splitting the *remainder* found 40% of that was scalar VFP too —
-   `VPUSH`/`VPOP`/`VLDM`/`VSTM` (293) and multiply-accumulate (476), both of
-   which had been declined earlier on the reasoning that approximating them
-   would be worse than trapping. `VMLA` expresses directly as
-   `vd = vd + (vn * vm)`; the only real loss is that ARM may fuse the multiply
-   and add without an intermediate rounding, where C rounds twice — a last-bit
-   mantissa difference, recorded rather than silently accepted.
-2. **Branch targets — 906 (0.65%).** The residue of the branch work: targets
-   that really are neither a placed label nor a registered function. A
-   *discovery* fix — being branched to from outside a collected region makes an
-   address an entry point, exactly as being called does.
-3. **Bitfield ops — 655 (0.47%).** `SBFX`/`UBFX`/`BFI`/`BFC`. Mechanical.
-4. **`"?"` — 236 (0.17%).** Down from 3,034; mostly data decoded as code.
-5. **The long tail — under 350 combined.** General `LDM`/`STM`, `MLA`/`MLS`,
-   `misc`, `sys`.
-
-Excluding NEON, roughly **1.4%** remains, so about **99% is reachable without
-touching the vector unit**.
-
-## Where the runtime earns its keep
-
-Every helper exists because the obvious C is **wrong**, not merely verbose:
-
-- **Shifts by ≥ 32.** C leaves them undefined; ARM defines them as zero; x86
-  masks the count to 5 bits, so the naive `v << 32` returns `v` *unchanged* —
-  the exact opposite of the right answer. Invisible until a shift amount is
-  computed rather than constant.
-- **Carry on subtraction is NOT a borrow.** ARM sets it when there is *no*
-  borrow. Getting it backwards inverts every unsigned comparison in the program.
-- **`ADC`'s carry cannot be tested with `res < a`.** With a carry in, adding
-  `0xFFFFFFFF` leaves the value unchanged while genuinely carrying, so the naive
-  test silently breaks every multi-word addition.
-- **Flag operands are captured before the destination is written**, because `rd`
-  and `rn` are frequently the same register and the flag computation needs the
-  original values.
-
-All of it is pinned by `tests/test_runtime.c`, with the expected values derived
-from the architecture's definition rather than from what the code returns.
-
-## Three bugs the compile caught that tests had not
-
-**`MOV pc, rN` was decoded as an ALU write** and emitted as `pc = r6`. That is a
-*branch*, not an assignment. It surfaced only because `cpu.h` deliberately has
-no `pc` variable, so the C refused to compile — had `pc` existed "for
-completeness", it would have built cleanly and silently run past a jump it
-should have taken.
-
-**Function extent is not function size.** The emitter first swept each
-function's extent linearly, but extent is the highest address the *flow* walk
-reached, and tail-call branches drag it across other functions. Every function
-re-emitted that whole span: **2.39 GB of C**. Flow-following instead of sweeping
-gave 133 MB and raised the translation rate, because the duplicated
-data-as-code was gone.
-
-**Being called is what makes an address a function.** Discovery gated
-registration on its "already decoded here" bitmap, so a call target another
-function's walk had wandered through never became a function — while the
-emitter still emitted a call to it. The C compiled and failed to link. Those are
-now two separate questions with two separate records.
-
-A related one, from the same link failure: the emitter now **never names a
-symbol it does not define**. Two call targets in this module land *inside the
-import table*, one of them 0x32 bytes into the first entry — data that happened
-to decode as a `BL`. They are traps now, not calls.
-
-## e_entry does not point at code
-
-The single most consequential thing found in phase 4. On Vita, `e_entry` names
-`.sce_module_info`, not an instruction. Following it as a code address on
-*Uncharted: Fight for Fortune* lands in the middle of a string table, on the
-module name `cardgame` — and every function discovered from that seed would be
-fiction.
-
-The real entry is `module_start` inside that structure, and the structure also
-names the export and import tables. This is psprecomp's "module_start is not
-the program" in a sharper form: here the ELF entry point is not even in `.text`.
-
-**Two address conventions, not one.** The `.sce_module_info` header fields
-(`export_top`, `import_top`, `module_start`) are **segment-relative offsets**.
-The pointers stored *inside* an import or export entry (`library_name`, the NID
-tables, the entry tables) are **absolute virtual addresses**. Resolving one as
-the other does not fault — it fails a bounds check and yields nothing, so the
-symptom is a table of `(unnamed)` libraries rather than an error. The two
-resolvers are kept as separate functions so the choice is explicit at every
-call site.
-
-## The HLE work list, derived
-
-```
-$ armrecomp funcs uncharted.elf
-module:   cardgame
-firmware libraries needed (524 functions across 39 libraries):
-  SceGxm                            107   nid 0xF76B66BD
-  SceLibc                            68   nid 0xBE43BB07
-  SceCommonDialog                    37   nid 0xE537816C
-  SceLibKernel                       30   nid 0xCAE9ACE6
-  SceLibm                            28   nid 0xCDAE3C7D
-  SceNgs                             25   nid 0xB01598D9
-  ...
-```
-
-`SceGxm` at 107 functions is over a fifth of everything imported — the deep end
-of phase 6, now with a number on it. Conversely the networking and trophy
-libraries total 112 functions that a single-player bring-up does not need, which
-is the same shape as psprecomp deferring WTF's ad-hoc networking.
-
-## Discovery, and what it honestly does not know
-
-```
-$ armrecomp discover uncharted.elf
-module:   cardgame   (ET_SCE_EXEC, no relocations)
-seeds:
-  call targets        52763
-  pointer shape       22288  (heuristic; 4993 candidates rejected)
-functions:            18978
-  from seeds           8764
-  from shape          10214  (heuristic)
-bytes covered:        3424148 / 5656372  (60.5%)
-  indirect sites      17970  (unresolved computed transfers)
-```
-
-Three things this does not claim:
-
-- **54% of functions come from a heuristic.** Shape recovery requires a word
-  with bit 0 set (the Thumb bit, the one genuinely reliable signal), pointing
-  into `.text`, that decodes as a function prologue. An earlier version required
-  only that it "decode as something", which rejected 45 of 27,281 candidates —
-  0.16%, meaning it was barely filtering at all. Requiring a prologue rejects
-  18%. It will still admit false positives and will miss leaf functions that
-  push nothing, so the two tiers are reported separately rather than summed.
-- **60.5% coverage is not 39.5% missed code.** The denominator is the whole
-  executable segment, which holds literal pools and read-only data. 100% would
-  indicate over-reach, not success.
-- **17,970 indirect call sites are unresolved.** These are register-form `BLX`
-  instructions whose destination is computed, and they are exactly what
-  relocation seeding would enumerate on a 2015+ module. `ET_SCE_EXEC` has no
-  relocations, so shape is all there is — which is the cost of the launch-window
-  catalogue being where the exclusives are.
-
-## NEON: a minority of the code, but the majority of what is left
-
-> **Correction.** Earlier revisions of this file put SIMD at 2.45% for this
-> title. That was an undercount caused by a decoder bug: the coprocessor mask
-> `(h1 & 0xEE00) == 0xEC00` matches `0xEC` and `0xED` but not `0xEE`/`0xEF`,
-> which is where VFP's CDP/MCR/MRC forms live. Roughly 2,800 VFP instructions
-> were being counted as *unknown* instead. The real figure is **5.19%**, and
-> the "unknown" figures were correspondingly inflated.
->
-> It surfaced from the trap breakdown below: 2.16% of instructions decoding to
-> `"?"` is a number that demands an explanation, and there wasn't one.
-
-The usual reason given for the Vita being a hard recompilation target is its
-NEON vector unit. That reputation turns out to be misdirected, and the reason is
-worth stating precisely.
-
-**Most of the coprocessor space is not vector work at all.** Breaking the 5.19%
-down by sub-encoding:
-
-| Sub-encoding | Share of the coprocessor space | Difficulty |
-|---|---:|---|
-| VFP load/store (`VLDR`/`VSTR`/`VLDM`) | 47.9% | Moving 32-bit values |
-| VFP single-precision | 32.1% | Scalar float → C `float`, near 1:1 |
-| VFP double-precision | 1.6% | Same, `double` |
-| **Advanced SIMD (NEON)** | **18.1%** | The genuinely hard part |
-| other coprocessor | 0.3% | — |
-
-**82% of it is scalar floating point**, and nearly half is load/store that does
-no arithmetic whatsoever. Implementing scalar VFP took the SIMD bucket from
-7,242 instructions to 2,207 and overall translation from 92.04% to **95.64%**.
-
-NEON proper is **0.94% of all instructions** — a quarter the size the headline
-figure suggested. It is still the hardest thing left, but it is not a wall, and
-it was never the reason this platform looked difficult.
-
-The lesson generalises past this instruction set: a bucket named after its
-hardest member gets budgeted like its hardest member. Splitting it by encoding
-before writing any code turned "the largest remaining problem" into "half of it
-is `memcpy`".
-
-Every module in the corpus is **Thumb-2 dominant**, with a real ARM minority
-that makes mode tracking mandatory rather than optional.
-
-```
-$ armrecomp cover uncharted.elf
-segment 0  vaddr 0x81000000  5656372 bytes executable
-  thumb    2137553 insns  unknown 3.67%  simd 2.45%  branch targets in range 99.89%  16-bit 67.7%
-  arm      1414093 insns  unknown 1.66%  simd 13.52%  branch targets in range 32.15%
-
-  dominant set: Thumb-2 (by branch-target validity, not unknown rate)
-    alu           936488  43.81%
-    load          352769  16.50%
-    store         291456  13.64%
-    branch        256083  11.98%
-    call          102178   4.78%
-    return         32078   1.50%
-    simd           52427   2.45%
-    sys             1496   0.07%
-```
-
-### A correction worth recording: the unknown rate is not a validity measure
-
-The first version of `cover` picked the dominant instruction set by whichever
-sweep produced fewer unknowns, and confidently reported **ARM** for a module
-whose returns are 10:1 Thumb.
-
-The reason is that the unknown rate measures *how permissive the decoder is for
-a given mode*, not whether the bytes are that mode. The ARM decoder assigns a
-class to every `op` value, so it reports near-zero unknowns on any input at all
-— including pure noise. Two tells gave it away: the ARM sweep claimed **22.62%
-system instructions** and **13.52% SIMD**, and no real compiled code has that
-shape.
-
-The honest discriminator is **branch-target validity**, because it is arithmetic
-performed on the decoded bits rather than a classification of them. Decode real
-code in its real mode and its branches point at other code in the same segment;
-decode it in the wrong mode and the offsets come from misaligned bits and
-scatter. It is a check the wrong answer can fail — 99.89% versus 32.15% on the
-same bytes.
-
-**Its known limit:** the in-range test weakens as the segment grows, since a
-larger segment is an easier target to hit by chance. *Volume* (53 MB) scores ARM
-at 96.30% and *AC III: Liberation* at 77.92%, where normal-sized modules put ARM
-at 16–45%. Thumb wins everywhere, but the metric is least discriminating exactly
-where the module is largest.
-
-**The unknown rate is an upper bound, not a decode failure rate.** ARM puts
-PC-relative constants in literal pools *inside* `.text`, so part of any linear
-sweep is decoding data. Those bytes are not instructions we failed to decode;
-they are not instructions. Separating them needs phase 4's control flow.
-
-### Reassembly is checkable, not merely plausible
-
-Decompression can succeed and still be wrong, so three independent numbers the
-file itself declares have to agree before an extract is accepted: the inflated
-size against each segment's `p_filesz`, the Adler-32 against the segment bytes,
-and the total against `elf_filesize`. On *Uncharted: Fight for Fortune* all
-three land exactly (`5,883,138` bytes declared and produced).
-
-**`e_entry` is not an absolute address.** Vita encodes it relative to the
-module — the top two bits select a program header, the low 30 are a byte offset
-into that segment. `0x004BA470` sits far below segment 0's vaddr of
-`0x81000000` while being comfortably inside its 5,656,372 bytes; resolved
-properly it is segment 0 + `0x4BA470`, or vaddr `0x814BA470`. An
-absolute-address check fails on every module — and worse, on a module with a low
-load address it could pass by coincidence and validate nothing.
-
-## The finding that shapes the project: QA builds are not encrypted
-
-Every Vita executable is wrapped in a SELF container that *supports* encryption.
-The question that matters is which modules actually *use* it — and because the
-segment table is plaintext, that is answerable with no key material at all.
-
-Across a corpus of QA/prototype builds and app-bundled system modules, **every
-segment is plaintext**, zlib-compressed only:
-
-| Module | Size | `.text` | Entry | `e_type` | Encrypted |
-|---|---:|---:|---|---|---:|
-| LittleBigPlanet (2012-07-31) | 4,866,592 | 8,780,492 | `0x00766468` | `SCE_EXEC` | **0** |
-| AC III: Liberation (2012-09-09) | 15,049,328 | 36,615,592 | `0x01F92E0C` | `SCE_EXEC` | **0** |
-| Ragnarok Odyssey (2012-09-13) | 2,592,576 | 4,692,640 | `0x0039D2C0` | `SCE_EXEC` | **0** |
-| CoD: Black Ops Declassified (2012-10-02) | 4,836,896 | 9,561,752 | `0x007C1F1C` | `SCE_EXEC` | **0** |
-| **Uncharted: Fight for Fortune** (2012-11-01) | 2,871,472 | 5,656,372 | `0x004BA470` | `SCE_EXEC` | **0** |
-| Guacamelee! (2013-03-06) | 4,317,584 | — | — | `SCE_EXEC` | **0** |
-| Valhalla Knights 3 (2013-05-30) | 2,523,552 | 5,596,220 | `0x004032DC` | `SCE_EXEC` | **0** |
-| Titan Souls (2015-04-01) | 1,680,560 | 3,053,164 | `0x002B36E8` | `SCE_RELEXEC` | **0** |
-| Shovel Knight (2015-04-08) | 2,306,752 | 3,582,384 | `0x00306030` | `SCE_RELEXEC` | **0** |
-| Super Blackout (2015-07-26) | 1,571,696 | — | `0x00209488` | `SCE_RELEXEC` | **0** |
-| Super Meat Boy (2015-09-18) | 945,600 | — | `0x0014A1F4` | `SCE_RELEXEC` | **0** |
-| Volume (2015-12-09) | 17,110,432 | — | `0x025D0660` | `SCE_RELEXEC` | **0** |
-| Trillion: God of Destruction (2016-02-15) | 2,093,456 | 3,375,228 | `0x002AAC68` | `SCE_RELEXEC` | **0** |
-| `libc.suprx` | 202,560 | 326,740 | `0x0003B4F8` | `SCE_RELEXEC` | **0** |
-| `libfios2.suprx` | 116,928 | — | `0x00022878` | `SCE_RELEXEC` | **0** |
-
-### Static vs relocatable is the split that matters
-
-`e_type` is not cosmetic. `ET_SCE_RELEXEC` modules carry `PT_SCE_RELA`
-segments, and a relocation naming a word that holds an address **is** a stored
-function pointer — thread entries, callbacks, vtables. Mining them is
-enumeration, not guesswork, and on PSP it moved coverage from 75% to 89%.
-
-`ET_SCE_EXEC` modules are statically linked: absolute addresses need no
-patching, so there are no relocations to mine. Recovering their function
-pointers falls back to recognising them by shape (in range, instruction-aligned,
-decodes as an instruction), which is a heuristic and is kept labelled as one.
-
-**The split is not per-title — it is chronological**, and across 15 measured
-modules it has no exceptions:
-
-| Era | `e_type` | `SCE_RELA` segments | Modules |
-|---|---|---:|---:|
-| 2012-07 → 2013-05 | `ET_SCE_EXEC` | **0** | 7 |
-| 2015-04 → 2016-02 | `ET_SCE_RELEXEC` | 2 | 6 (+2 system modules) |
-
-The boundary falls somewhere between 2013-05 and 2015-04, which points at a
-toolchain generation change — but **that mechanism is unconfirmed, and the two
-obvious candidates were both refuted by measurement.** `sdk_type` is `0x00C0`
-on every module in the corpus, so it discriminates nothing. `sys_version` does
-not track the split either: *Guacamelee* (2013-03) and *Uncharted: Fight for
-Fortune* (2012-11) both carry the later `0x1010000000000` while still being
-static. The correlation is real; the cause is not established, and there is no
-earlier signal in the container than `e_type` itself.
-
-**Why this matters more than one title's difficulty:** the Vita exclusives worth
-recompiling are overwhelmingly launch-window titles, because that is when the
-platform still had exclusives — and the entire launch window is static. So
-shape-based pointer recovery is not a workaround for one awkward pick, it is
-required infrastructure for the early-era catalogue as a whole.
-
-That is a large claim, so it is checked against the bytes rather than the flag:
-every segment begins with a valid zlib header, and offset `0x1000` holds a
-plaintext ELF header whose `e_entry` matches the value read independently from
-the ELF header at `0xA0`. Five independent segments landing on valid zlib magic
-is not something ciphertext does.
-
-**Consequence:** the entire pipeline — parse, inflate, decode, discover, emit,
-compile, link — can be built and validated end to end without any key material
-entering the picture. This is the same result `psprecomp` found on PSP prototype
-discs, and it has the same effect on the project's shape.
-
-**Honestly accounted for:** we do not yet have a *true negative* — a module we
-know to be encrypted that the parser correctly reports as such. Until one is in
-the corpus, "the parser discriminates" rests on the zlib cross-check rather than
-on a demonstrated encrypted case. Retail NoNpDrm dumps sit behind a further PFS
-layer keyed per-title by the dumping console, and stay out of scope entirely;
-see [`docs/DECRYPT.md`](docs/DECRYPT.md).
-
-## Two corrections worth recording
-
-Both are the same lesson from a different angle: a plausible reading of a binary
-is not a verified one.
-
-**The SELF header is not the PS3 SELF header.** Vita inserts `self_filesize` and
-a padding qword at `0x20`, shifting every field after it by `0x10`. Built against
-the widely-published PS3 layout, the parser read `elf_offset` from `0x30` and got
-`4` — not garbage, not obviously wrong, just a small plausible offset. What
-caught it was that the ELF header is independently locatable: scanning for
-`7F 45 4C 46` puts it at `0xA0`, which is the field at `0x40`.
-
-**The synthetic test agreed with the bug.** It was built from the same wrong
-layout as the parser, so it passed. That is the general limit of synthetic tests
-on a reverse-engineered format, and the reason a real module is in the loop from
-phase 1 rather than phase 3.
-
-A third, found the same way: **MSVC Release defines `NDEBUG`**, which compiles
-every `assert()` in the suite to nothing. The tests printed "all passed" while
-checking nothing. The build now strips `NDEBUG` for test targets, and
-`test_container.c` `#error`s if it ever comes back — a silent green run is worse
-than a red one.
-
-## Building
-
-Requires CMake and a C compiler (MSVC on Windows; gcc/clang elsewhere). The core
-has **no external dependencies** — a fresh clone builds with nothing installed.
+True NEON is 0.94% of all instructions, so about **99% is reachable without
+touching the vector unit**. Breakdown in
+[docs/TRANSLATION.md](docs/TRANSLATION.md).
+
+> ⚠️ **One verification is outstanding.** The generated C is confirmed to
+> compile, link and run at 100 functions, but not re-confirmed at 1,500 across
+> the seven toolkit changes since (VFP, dispatch, wide branches, list forms).
+> The translation percentages come straight from the emitter and are solid;
+> "it still builds at scale" is currently an assumption. Re-running that check
+> needs the QA proto on `W:\`.
+
+## Documentation
+
+| Document | What It Covers |
+|----------|---------------|
+| **[Architecture](docs/ARCHITECTURE.md)** | The pipeline stage by stage: container, inflate, decode, discovery, emit, runtime. Address conventions, indirect dispatch, import binding, and why each runtime helper exists |
+| **[Translation](docs/TRANSLATION.md)** | Coverage figures, `ThumbExpandImm` and its traps, what is still trapping ranked by value, the NEON/VFP breakdown |
+| **[Corpus](docs/CORPUS.md)** | The 15 measured modules, the plaintext finding, the `ET_SCE_EXEC` → `ET_SCE_RELEXEC` era split and why it makes the launch window the hard case |
+| **[Decryption](docs/DECRYPT.md)** | The SELF container, what is encrypted and what is not, and why the QA corpus needs no keys |
+| **[HLE](docs/HLE.md)** | The firmware surface, measured, and the order of work |
+| **[Lessons](docs/LESSONS.md)** | Corrections and bugs found by running rather than reasoning: `MOVT`, the wrong dominant-instruction-set metric, the SIMD undercount, the PS3-layout SELF header |
+| **[Roadmap](docs/ROADMAP.md)** | The six phases, checked off against what actually runs |
+
+## Getting Started
+
+> **Prerequisites**: CMake and a C compiler (MSVC on Windows; gcc/clang
+> elsewhere). The core has **no external dependencies** — a fresh clone builds
+> with nothing installed.
 
 ```powershell
+git clone https://github.com/sp00nznet/vitarecomp.git
+cd vitarecomp
+
 cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release
@@ -686,126 +175,78 @@ ctest --test-dir build -C Release
 ```
 
 ```
-armrecomp info <file>     identify a module and report its structure
+armrecomp info     <file>                       identify a module, report its structure
+armrecomp extract  <self> <out.elf>             SELF in, plain ELF32 out
+armrecomp cover    <elf>                        coverage, class histogram, instruction set
+armrecomp funcs    <elf> [nid-db]               the HLE work list, from the import table
+armrecomp discover <elf>                        function discovery
+armrecomp emit     <elf> <out.c> <n> [nid-db]   translate to C
 ```
 
-`info` accepts a SELF (`eboot.bin`, `*.suprx`) or a plain ELF/velf.
+`info` accepts a SELF (`eboot.bin`, `*.suprx`) or a plain ELF/velf. The optional
+NID database is a path to
+[vita-headers](https://github.com/vitasdk/vita-headers) `db/360` — **loaded at
+run time, not vendored**: bundling it would be permitted, but it is data, and
+keeping it external means the toolkit carries no third-party source and a newer
+database needs no rebuild.
 
-## On licensing, and why there is no emulator vendored here
+## Picking a Title
 
-The same arrangement `psprecomp` has with PPSSPP, and for the same reason: the
-emulator is a thing you *diff against*, never a thing you link.
+The toolkit is the product; a game brought up on it lives in its own repo
+consuming this one as a submodule. Selection criteria, all measurable before
+committing:
+
+1. **A QA/prototype build exists** — plaintext segments, no keys, no PFS.
+2. **Small `.text`** — less to reach full decode coverage on.
+3. **2D** — `sceGxm` is the deepest part of phase 6; a title that leans on it
+   lightly gets to "runs" sooner.
+4. **Low NEON density** — `armrecomp cover` reports it.
+
+| Title | Why | Status |
+|---|---|---|
+| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 18,978 functions discovered, **97.87% translated**, 524 imports bound |
+
+## Relationship to Other Projects
 
 | Project | License | How it is used |
 |---|---|---|
 | [vita-headers](https://github.com/vitasdk/vita-headers) | MIT | The NID database — the published mapping from import NIDs to function names. The reference for the HLE work list. |
 | [VitaSDK](https://github.com/vitasdk) | MIT | Headers and the published ABI for `sceGxm` / `sceKernel` / `sceCtrl`. |
-| **Vita3K** | **GPLv2** | **Oracle only** — run as a separate process and compared against. No code copied, linked, or vendored. |
+| **[Vita3K](https://github.com/Vita3K/Vita3K)** | **GPLv2** | **Oracle only** — run as a separate process and compared against. No code copied, linked, or vendored. |
+| [psprecomp](https://github.com/sp00nznet/psprecomp) | MIT | Sibling project for PSP. Same "`module_start` is not the program" shape, same oracle arrangement with PPSSPP. |
+| [ps3recomp](https://github.com/sp00nznet/ps3recomp) | MIT | Sibling project for PS3. Same project structure and conventions. |
 
-**This is the constraint that most shapes the runtime.** Vita3K is GPLv2, so the
-usual "chop the emulator into a link library" move is not available if the
-toolkit is to stay MIT — and the part you would most want from it (the `sceGxm`
-and kernel HLE) is exactly the part you would be tempted to vendor. That layer
-has to be written here, against the MIT headers.
+**Vita3K's license is the constraint that most shapes the runtime.** It is
+GPLv2, so the usual "chop the emulator into a link library" move is not
+available if the toolkit is to stay MIT — and the part you would most want from
+it (the `sceGxm` and kernel HLE) is exactly the part you would be tempted to
+vendor. There is no LGPL escape either: the arrangement that works for
+[xboxrecomp](https://github.com/sp00nznet/xboxrecomp), extracting LGPL-2.1
+components from xemu, depends on QEMU deliberately dual-tracking its hardware
+model under LGPL so it can be embedded. Vita3K has no equivalent.
+
+What does carry over is everything else — independently implemented algorithms
+with credit, and functional facts (NIDs, struct layouts, enum values, calling
+conventions) which are not copyrightable and are most of what the shallow work
+needs.
 
 *Licenses above are the working understanding and are re-checked before any code
 or data from a project is actually used.*
 
-## Repository layout
+## Contributing
 
-```
-include/vitarecomp/   runtime API (phase 3)
-src/                  runtime (phase 3)
-tools/armrecomp/      the toolkit: container stack (SELF · ELF/velf), CLI
-tests/                ctest: container parser — synthetic, no game data
-docs/                 DECRYPT (and, as they land: ARCHITECTURE · CONTAINERS ·
-                      RECOMPILER · ORACLE)
-```
+The gaps are named and ranked, which makes them pick-up-able:
 
-## The HLE work list, resolved
+- **NEON** — ~1,300 instructions, the only genuinely hard piece left in the emitter
+- **Bitfield ops** — `SBFX`/`UBFX`/`BFI`/`BFC`, mechanical, 0.47%
+- **Branch-target promotion** — a discovery fix, 0.65%
+- **`SceLibc` / `SceLibm`** — 96 functions, largely host-forwardable
+- **`sceGxm`** — ~85 shallow state setters, then the scene pipeline
+- **GXP shader translation** — a compiler, and the largest single piece
+- **A true negative for the corpus** — a module known to be encrypted, that the
+  parser correctly refuses
 
-```
-$ armrecomp funcs uncharted.elf path/to/vita-headers/db/360
-nid db:   154 files, 9274 functions
-...
-resolved 519 of 524 imported functions (99.0%)
-```
-
-Imports are NIDs — the first four bytes of the SHA-1 of a function's name — so
-the names come from the MIT [vita-headers](https://github.com/vitasdk/vita-headers)
-database. It is **loaded at run time, not vendored**: bundling it would be
-permitted, but it is data, and keeping it external means the toolkit carries no
-third-party source and a newer database needs no rebuild.
-
-**`SceGxm` is 107 functions, and that number is misleading.** About 85 are
-struct field writes — state setters, texture accessors, surface init. The real
-work is roughly 15 functions: GXP reflection, the scene pipeline, and the GXP
-shader translator, which is a compiler in its own right. See
-[`docs/HLE.md`](docs/HLE.md).
-
-## Imports are bound, so firmware calls say what they are
-
-A module never calls firmware directly. It calls a **stub** inside its own
-`.text` that the loader patches at load time, so the recompiler sees an ordinary
-`BL` to an ordinary address. Left unbound, every firmware call looks like an
-internal call to a function whose body is placeholder filler — and recompiling
-that filler would translate it and then "return" into whatever it happened to
-be.
-
-Pairing the import NID table with the entry table gives the stub address for
-each function, so calls bind at emit time:
-
-```
-$ armrecomp emit uncharted.elf recomp_funcs.c 100 path/to/vita-headers/db/360
-  translated    6161  (69.80%)
-  import calls    49  bound to firmware
-
-wrote recomp_funcs_imports.c
-  524 import stubs, each trapping by name
-```
-
-```c
-void vita_hle_sceGxmMapFragmentUsseMemory(void);
-```
-
-and in the companion file, one default per import:
-
-```c
-/* SceRtcUser::sceRtcGetCurrentTick  stub 0x814B83D0 */
-void vita_hle_sceRtcGetCurrentTick(void) { vita_trap_import(0x814B83D0, 0x23F79274); }
-```
-
-That is what makes the HLE **incrementally implementable**. The generated C
-links from the first build, and an unimplemented firmware call names exactly
-which function the game wanted — rather than failing to link, or silently
-returning zero. Implementing one means removing its stub and providing a real
-body in the link.
-
-## Why the HLE is written rather than borrowed
-
-Vita3K is **GPLv2** — its README attributes the choice to *"external
-dependencies, most notably Unicorn"*, a CPU emulator, which is exactly the
-component a static recompiler exists to replace. That gives no relicensing room,
-and there is no LGPL escape: the arrangement that works for
-[`xboxrecomp`](https://github.com/sp00nznet/xboxrecomp), extracting LGPL-2.1
-components from xemu, depends on **QEMU deliberately dual-tracking its hardware
-model under LGPL** so it can be embedded. Vita3K has no equivalent.
-
-What does carry over is everything else — independently implemented algorithms
-with credit, and functional facts (NIDs, struct layouts, enum values, calling
-conventions) which are not copyrightable and are most of what the shallow 85
-need. Vita3K stays a **behavioural oracle**: separate process, compared against,
-never linked.
-
-## Documentation
-
-- [`docs/DECRYPT.md`](docs/DECRYPT.md) — the SELF container, what is encrypted
-  and what is not, and why the QA corpus needs no keys.
-- [`docs/HLE.md`](docs/HLE.md) — the firmware surface, measured, and the order
-  of work.
-- [`ROADMAP.md`](ROADMAP.md) — phased plan.
-
-## Credits & references
+## Credits & References
 
 All code here is original, but it stands on a great deal of prior
 reverse-engineering. With thanks to:
@@ -820,10 +261,15 @@ reverse-engineering. With thanks to:
   on the SELF format, the module info structures and the NID scheme is what
   makes any of this tractable.
 
-> Running a game requires a dump that **you** own. No game data, no firmware, and
-> no keys ship in this repo.
+## Legal
+
+This project contains no proprietary Sony code, encryption keys, or copyrighted
+material. It provides clean-room implementations of system library interfaces
+based on publicly documented behaviour. Running a game requires a dump that
+**you** own. Key derivation, key extraction, and the PFS layer are out of scope,
+now and later.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Independent, non-commercial preservation work;
-not affiliated with or endorsed by Sony Interactive Entertainment.
+MIT — see [LICENSE](LICENSE). Independent, non-commercial preservation work; not
+affiliated with or endorsed by Sony Interactive Entertainment.
