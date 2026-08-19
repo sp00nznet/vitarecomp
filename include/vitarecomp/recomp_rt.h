@@ -123,6 +123,39 @@ static inline uint32_t vita_rev(uint32_t v) {
          | ((v >> 8) & 0xFF00) | ((v >> 24) & 0xFF);
 }
 
+/* --- bitfields ---------------------------------------------------------------
+ *
+ * The obvious C is wrong in two places. `(1u << width) - 1` is UNDEFINED at
+ * width 32, which is a legal UBFX width — and the natural way to write SBFX,
+ * a left shift followed by a signed right shift, leans on `>>` sign-extending,
+ * which C only implementation-defines. Both produce correct answers on the
+ * usual compilers right up until they do not.
+ */
+
+static inline uint32_t vita_bf_mask(uint32_t width) {
+    return width >= 32 ? 0xFFFFFFFFu : (1u << width) - 1u;
+}
+
+static inline uint32_t vita_ubfx(uint32_t v, uint32_t lsb, uint32_t width) {
+    return vita_lsr(v, lsb) & vita_bf_mask(width);
+}
+
+static inline uint32_t vita_sbfx(uint32_t v, uint32_t lsb, uint32_t width) {
+    uint32_t f = vita_lsr(v, lsb) & vita_bf_mask(width);
+    if (width == 0 || width >= 32) return f;
+    /* Sign is the field's top bit, not the register's. */
+    return (f & (1u << (width - 1))) ? (f | ~vita_bf_mask(width)) : f;
+}
+
+/* BFI, and BFC with src == 0. The bits outside the field are preserved, which
+ * is the whole point — this is the one place a destination register is read
+ * before it is written. */
+static inline uint32_t vita_bfi(uint32_t dst, uint32_t src,
+                                uint32_t lsb, uint32_t width) {
+    uint32_t m = vita_lsl(vita_bf_mask(width), lsb);
+    return (dst & ~m) | (vita_lsl(src, lsb) & m);
+}
+
 /* --- gaps that announce themselves ------------------------------------------
  *
  * Anything not translated calls one of these. A gap that stops the program and

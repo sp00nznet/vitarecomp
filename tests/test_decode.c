@@ -316,6 +316,56 @@ static void test_operands(void) {
  * Both directions are checked, with the encodings derived by hand.
  */
 
+/* The bitfield group shares its 5-bit op field with MOVW/MOVT/ADDW, and the
+ * position of the field is encoded three different ways across four
+ * instructions: SBFX/UBFX give a width, BFI gives an end bit, BFC gives an end
+ * bit and no source. Reading any of them as another silently shifts data. */
+static void test_bitfield(void) {
+    memset(code, 0, sizeof(code));
+
+    /* ubfx r0, r1, #4, #8 */
+    put16(0, 0xF3C1); put16(2, 0x1007);
+    arm_insn in = dec(ARM_T32, BASE);
+    assert(in.width == 4 && in.op == OP_UBFX);
+    assert(in.rd == 0 && in.rn == 1 && in.bf_lsb == 4 && in.bf_width == 8);
+
+    /* sbfx r0, r1, #4, #8 — same operands, one bit of op apart. */
+    put16(0, 0xF341); put16(2, 0x1007);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_SBFX && in.bf_lsb == 4 && in.bf_width == 8);
+
+    /* bfi r0, r1, #4, #8 — encoded as msb = 11, so width must be derived. */
+    put16(0, 0xF361); put16(2, 0x100B);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_BFI && in.rn == 1 && in.bf_lsb == 4 && in.bf_width == 8);
+
+    /* bfc r0, #4, #8 — the same encoding with rn == 15, which is "no source"
+     * and not a reference to the PC. */
+    put16(0, 0xF36F); put16(2, 0x100B);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_BFC && in.rn == ARM_NO_REG && in.bf_width == 8);
+
+    /* ubfx running off the end of the register (lsb 28, width 8) is
+     * UNPREDICTABLE, and a linear sweep over a literal pool produces it. It
+     * must trap rather than emit a clamped extract. */
+    put16(0, 0xF3C1); put16(2, 0x7007);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_NONE && strcmp(in.mnemonic, "ubfx") == 0);
+
+    /* ssat lives in the same group and is not bitfield work; it is named
+     * separately so the trap report does not overstate what is left. */
+    put16(0, 0xF300); put16(2, 0x0000);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_NONE && strcmp(in.mnemonic, "sat") == 0);
+
+    /* movw still matches: it sets bit 6, which the group's op field shares. */
+    put16(0, 0xF241); put16(2, 0x2034);
+    in = dec(ARM_T32, BASE);
+    assert(in.op == OP_MOV && in.imm == 0x1234);
+
+    printf("  bitfield                       ok\n");
+}
+
 static void test_bl_target(void) {
     memset(code, 0, sizeof(code));
 
@@ -564,6 +614,7 @@ int main(void) {
     test_operands();
     test_thumb_expand_imm();
     test_t32_operands();
+    test_bitfield();
     test_bl_target();
     test_branch_targets();
     test_mode_switches();

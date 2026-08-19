@@ -573,6 +573,22 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             fprintf(f, "    %s = vita_rev(%s);\n", reg_name(in->rd), reg_name(in->rm));
             break;
 
+        case OP_SBFX: case OP_UBFX:
+            fprintf(f, "    %s = %s(%s, %u, %u);\n", reg_name(in->rd),
+                    in->op == OP_SBFX ? "vita_sbfx" : "vita_ubfx",
+                    reg_name(in->rn), in->bf_lsb, in->bf_width);
+            break;
+
+        case OP_BFI:
+            fprintf(f, "    %s = vita_bfi(%s, %s, %u, %u);\n", reg_name(in->rd),
+                    reg_name(in->rd), reg_name(in->rn), in->bf_lsb, in->bf_width);
+            break;
+
+        case OP_BFC:
+            fprintf(f, "    %s = vita_bfi(%s, 0, %u, %u);\n", reg_name(in->rd),
+                    reg_name(in->rd), in->bf_lsb, in->bf_width);
+            break;
+
         case OP_CBZ: case OP_CBNZ:
             if (fb_has_label(b, in->target))
                 fprintf(f, "    if (%s %s 0) goto L_%08X;\n", reg_name(in->rn),

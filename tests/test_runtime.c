@@ -154,6 +154,38 @@ static void test_extends(void) {
     printf("  extends and rev                ok\n");
 }
 
+/* --- bitfields -------------------------------------------------------------- */
+
+/* Expected values are the architecture's definition, not what the code
+ * happens to return. The two that matter are the width-32 mask, where the
+ * obvious `(1u << 32) - 1` is undefined, and SBFX's sign, which comes from the
+ * top bit of the FIELD and not of the register. */
+static void test_bitfields(void) {
+    assert(vita_bf_mask(0)  == 0x00000000u);
+    assert(vita_bf_mask(8)  == 0x000000FFu);
+    assert(vita_bf_mask(32) == 0xFFFFFFFFu);
+
+    assert(vita_ubfx(0xDEADBEEFu, 4, 8) == 0xEEu);
+    assert(vita_ubfx(0xDEADBEEFu, 0, 32) == 0xDEADBEEFu);   /* the UB case */
+    assert(vita_ubfx(0x80000000u, 31, 1) == 1u);
+
+    /* Field 0x8 with width 4: its top bit is set, so it sign-extends — even
+     * though the register itself is positive. */
+    assert(vita_sbfx(0x00000080u, 4, 4) == 0xFFFFFFF8u);
+    assert(vita_sbfx(0x00000070u, 4, 4) == 0x00000007u);
+    assert(vita_sbfx(0xDEADBEEFu, 0, 32) == 0xDEADBEEFu);
+
+    /* BFI preserves everything outside the field, which is what makes it a
+     * read-modify-write of the destination rather than an assignment. */
+    assert(vita_bfi(0xFFFFFFFFu, 0x0u, 4, 8) == 0xFFFFF00Fu);   /* bfc */
+    assert(vita_bfi(0x00000000u, 0xFFu, 4, 8) == 0x00000FF0u);
+    /* Source bits above the field width are discarded, not spilled. */
+    assert(vita_bfi(0x00000000u, 0xFFFFu, 4, 8) == 0x00000FF0u);
+    assert(vita_bfi(0x12345678u, 0x0u, 0, 32) == 0x00000000u);
+
+    printf("  bitfields                      ok\n");
+}
+
 /* --- memory ----------------------------------------------------------------- */
 
 static void test_memory(void) {
@@ -193,6 +225,7 @@ int main(void) {
     test_flags_adc();
     test_conditions();
     test_extends();
+    test_bitfields();
     test_memory();
     printf("all runtime tests passed\n");
     return 0;

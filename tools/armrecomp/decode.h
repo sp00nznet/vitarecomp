@@ -65,6 +65,7 @@ typedef enum {
     OP_ADR,
     OP_SXTB, OP_SXTH, OP_UXTB, OP_UXTH, OP_REV,
     OP_IT, OP_NOP, OP_SVC, OP_CBZ, OP_CBNZ,
+    OP_SBFX, OP_UBFX, OP_BFI, OP_BFC,
 
     /* Scalar VFP. Not vector work — 82% of this platform's coprocessor traffic
      * is ordinary floating point, and it maps onto C almost one to one. */
@@ -123,6 +124,11 @@ typedef struct {
     uint8_t    writeback;
     uint8_t    mem_add;         /* U bit: offset added rather than subtracted */
     uint8_t    it_mask;         /* IT: which of the next 4 are conditional */
+
+    /* Bitfield ops. Kept out of `imm`/`shift_amt` because a field named for
+     * something else is how a reader ends up trusting the wrong one. */
+    uint8_t    bf_lsb;
+    uint8_t    bf_width;
 } arm_insn;
 
 const char *arm_cond_name(uint8_t cond);

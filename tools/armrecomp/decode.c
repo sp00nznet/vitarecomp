@@ -857,7 +857,49 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
             set(o, A_ALU, "addw/subw");
             return;
         }
-        set(o, A_ALU, "bitfield");                /* SBFX/UBFX/BFI and friends */
+        /* The rest of this group is bitfield and saturating arithmetic, split
+         * by the same 5-bit op the forms above use. `imm` is not an immediate
+         * here at all — the field holds a width or a bit position — which is
+         * why these need their own operands rather than reusing `imm`. */
+        uint32_t bop = (h1 >> 4) & 0x1F;
+        uint32_t lsb = (uint32_t)(((h2 >> 12) & 7) << 2) | ((h2 >> 6) & 3);
+        o->rn = h1 & 0xF;
+        o->has_imm = 0;
+        o->bf_lsb  = (uint8_t)lsb;
+
+        if (bop == 0x14 || bop == 0x1C) {         /* sbfx / ubfx              */
+            uint32_t width = (h2 & 0x1F) + 1;
+            /* lsb + width past the end of the register is UNPREDICTABLE, and
+             * a linear sweep over literal pools produces it. Refuse rather
+             * than clamp: a trap says "this was not an instruction", a clamped
+             * extract says nothing. */
+            if (lsb + width <= 32) {
+                o->op = (bop == 0x14) ? OP_SBFX : OP_UBFX;
+                o->bf_width = (uint8_t)width;
+            }
+            set(o, A_ALU, (bop == 0x14) ? "sbfx" : "ubfx");
+            return;
+        }
+        if (bop == 0x16) {                        /* bfi / bfc                */
+            /* BFI names the field by its END bit, not its width — msb is an
+             * absolute position, so the width has to be derived. BFC is the
+             * same encoding with rn == 15, which here means "no source"
+             * rather than "the PC". */
+            uint32_t msb = h2 & 0x1F;
+            int clear = (o->rn == 15);
+            if (msb >= lsb) {
+                o->op = clear ? OP_BFC : OP_BFI;
+                o->bf_width = (uint8_t)(msb - lsb + 1);
+            }
+            if (clear) o->rn = ARM_NO_REG;
+            set(o, A_ALU, clear ? "bfc" : "bfi");
+            return;
+        }
+        /* SSAT/USAT: saturating arithmetic, not bitfield work. Named
+         * separately so the trap report does not claim bitfield instructions
+         * remain after these are the only thing left in the group. */
+        o->rn = ARM_NO_REG;
+        set(o, A_ALU, "sat");
         return;
     }
 
