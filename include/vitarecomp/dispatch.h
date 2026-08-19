@@ -30,8 +30,13 @@ void vita_dispatch_init(const vita_dispatch_entry *table, uint32_t count);
 
 /* Call the function recompiled from `addr`. The Thumb bit is masked off here
  * rather than at every call site — a pointer to Thumb code always has bit 0
- * set, and that is an instruction-set marker, not part of the address. */
-void vita_dispatch(uint32_t addr);
+ * set, and that is an instruction-set marker, not part of the address.
+ *
+ * `from` is the guest address of the transfer itself. A miss reports both, and
+ * the destination alone is not enough to act on: "something jumped to
+ * 0x814B9590" does not say which function to translate next, and that is the
+ * only question a miss ever raises. */
+void vita_dispatch(uint32_t from, uint32_t addr);
 
 /* How many distinct addresses were dispatched to, and how many missed. Useful
  * for telling "the table is incomplete" from "the program went somewhere it

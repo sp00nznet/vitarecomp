@@ -18,7 +18,7 @@ void vita_dispatch_init(const vita_dispatch_entry *table, uint32_t count) {
 uint32_t vita_dispatch_hits(void)   { return g_hits; }
 uint32_t vita_dispatch_misses(void) { return g_misses; }
 
-void vita_dispatch(uint32_t addr) {
+void vita_dispatch(uint32_t from, uint32_t addr) {
     /* Bit 0 marks the instruction set, not the address. Every pointer to Thumb
      * code carries it, so failing to mask means every lookup misses by one. */
     uint32_t key = addr & ~1u;
@@ -39,5 +39,5 @@ void vita_dispatch(uint32_t addr) {
      * do something — set a return value, mutate memory, never come back — and
      * pretending it ran is how a recompiled program produces confident garbage.
      * vita_trap_indirect stops unless tracing is on. */
-    vita_trap_indirect(0, addr);
+    vita_trap_indirect(from, addr);
 }

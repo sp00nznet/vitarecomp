@@ -265,13 +265,23 @@ static int address(char *dst, size_t cap, const arm_insn *in) {
     if (in->rn == 15) {
         /* PC-relative. A recompiled program has no PC, so it is resolved here:
          * for Thumb the base is the instruction address plus 4, aligned down to
-         * a word. This is what turns a literal-pool load into a constant. */
+         * a word. This is what turns a literal-pool load into a constant.
+         *
+         * Every caller must come through here rather than formatting `rn`
+         * itself: `reg_name(15)` is "pc", and cpu.h deliberately has no such
+         * variable, so a caller that builds its own address expression emits C
+         * that does not compile. That is the good failure — the bad one is a
+         * `pc` that exists and holds something plausible. */
         uint32_t pc = (in->addr + 4) & ~3u;
-        snprintf(dst, cap, "0x%08X", pc + in->imm);
+        snprintf(dst, cap, "0x%08X", in->mem_add ? pc + in->imm : pc - in->imm);
         return 1;
     }
+    /* The U bit is not decoration: the T32 8-bit form encodes [rN, #-imm]
+     * with the same fields as the positive one, so ignoring it reads from the
+     * wrong side of the base register. */
     if (in->has_imm && in->imm)
-        snprintf(dst, cap, "%s + 0x%X", reg_name(in->rn), in->imm);
+        snprintf(dst, cap, "%s %c 0x%X", reg_name(in->rn),
+                 in->mem_add ? '+' : '-', in->imm);
     else if (in->rm != ARM_NO_REG)
         snprintf(dst, cap, "%s + %s", reg_name(in->rn), reg_name(in->rm));
     else
@@ -628,8 +638,8 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
              * translation. BX is a tail transfer and does not come back; BLX is
              * a call and does. */
             if (in->rm == ARM_NO_REG) { ok = 0; break; }
-            if (in->op == OP_BX) fprintf(f, "    vita_dispatch(%s); return;\n", reg_name(in->rm));
-            else                 fprintf(f, "    vita_dispatch(%s);\n", reg_name(in->rm));
+            if (in->op == OP_BX) fprintf(f, "    vita_dispatch(0x%08X, %s); return;\n", in->addr, reg_name(in->rm));
+            else                 fprintf(f, "    vita_dispatch(0x%08X, %s);\n", in->addr, reg_name(in->rm));
             break;
 
         /* --- scalar VFP ---------------------------------------------------
@@ -639,10 +649,36 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
          * the float and double forms of everything.
          */
         case OP_VLDR: case OP_VSTR: {
-            if (in->rn == ARM_NO_REG || in->vd == ARM_NO_REG) { ok = 0; break; }
+            if (in->vd == ARM_NO_REG) { ok = 0; break; }
+            /* Through the shared address(), not a local snprintf. VFP constants
+             * live in the same literal pools as integer ones, so `rn == 15` is
+             * common here — and building the expression locally emitted a bare
+             * `pc`, which does not compile. */
             char a[64];
-            snprintf(a, sizeof(a), "%s %c 0x%X", reg_name(in->rn),
-                     in->mem_add ? '+' : '-', in->imm);
+            if (!address(a, sizeof(a), in)) { ok = 0; trap(f, in, "vldr addr"); break; }
+
+            /* A VFP literal-pool load has a fixed address, so fold it to a
+             * constant exactly as the integer path does — same reason, too:
+             * it keeps the pool from being read back as code later. */
+            if (in->rn == 15) {
+                uint32_t pc = (in->addr + 4) & ~3u;
+                uint32_t at = in->mem_add ? pc + in->imm : pc - in->imm;
+                const uint8_t *p = vm_va(img, at, in->vfp_dp ? 8 : 4);
+                if (p && in->op == OP_VLDR) {
+                    for (int w = 0; w < (in->vfp_dp ? 2 : 1); w++) {
+                        uint32_t v = (uint32_t)p[w*4] | ((uint32_t)p[w*4+1] << 8)
+                                   | ((uint32_t)p[w*4+2] << 16) | ((uint32_t)p[w*4+3] << 24);
+                        if (in->vfp_dp)
+                            fprintf(f, "    vfp_s[%d].u = 0x%08Xu;  /* literal */\n",
+                                    in->vd * 2 + w, v);
+                        else
+                            fprintf(f, "    vfp_setu(%d, 0x%08Xu);  /* literal */\n",
+                                    in->vd, v);
+                    }
+                    st->literals++;
+                    break;
+                }
+            }
             if (in->op == OP_VLDR) {
                 if (in->vfp_dp) {
                     fprintf(f, "    vfp_s[%d].u = vita_read32(%s);\n", in->vd * 2, a);
