@@ -138,6 +138,10 @@ True NEON is 0.94% of all instructions, so about **99% is reachable without
 touching the vector unit**. Breakdown in
 [docs/TRANSLATION.md](docs/TRANSLATION.md).
 
+Bitfield ops (`SBFX`/`UBFX`/`BFI`/`BFC`, 0.47%) have landed since that report
+was taken and are pinned by tests, but the module has not been re-measured —
+see the note below.
+
 > ⚠️ **One verification is outstanding.** The generated C is confirmed to
 > compile, link and run at 100 functions, but not re-confirmed at 1,500 across
 > the seven toolkit changes since (VFP, dispatch, wide branches, list forms).
@@ -238,7 +242,6 @@ or data from a project is actually used.*
 The gaps are named and ranked, which makes them pick-up-able:
 
 - **NEON** — ~1,300 instructions, the only genuinely hard piece left in the emitter
-- **Bitfield ops** — `SBFX`/`UBFX`/`BFI`/`BFC`, mechanical, 0.47%
 - **Branch-target promotion** — a discovery fix, 0.65%
 - **`SceLibc` / `SceLibm`** — 96 functions, largely host-forwardable
 - **`sceGxm`** — ~85 shallow state setters, then the scene pipeline

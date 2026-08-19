@@ -97,7 +97,12 @@ obstacle on this platform.
       and then trapped anyway, because the decoder never set `op`. Translation
       **95.65% → 97.47%**
 - [ ] Branch targets promoted to functions — 906 remaining (0.65%)
-- [ ] Bitfield ops — 655 (0.47%)
+- [x] **Bitfield ops** — `SBFX`/`UBFX`/`BFI`/`BFC`, 655 (0.47%). The group's
+      5-bit op field is shared with `MOVW`/`MOVT`/`ADDW`, and the field
+      position is encoded three ways across the four instructions. `SSAT`/
+      `USAT` share the group and are named separately, since they are not
+      bitfield work. Out-of-range extracts and `msb < lsb` keep trapping
+      rather than being clamped
 - [x] **The scalar VFP remainder** — `VPUSH`/`VPOP`/`VLDM`/`VSTM` and the
       multiply-accumulate forms. Translation **97.47% → 97.87%**
 - [ ] Advanced SIMD (NEON) — ~1,300 instructions (0.94%), and now genuinely the
