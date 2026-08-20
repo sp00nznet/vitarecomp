@@ -654,30 +654,63 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
     /* 11110 ... with bit 15 of the second halfword set: branches and
      * miscellaneous control. */
     if ((h1 & 0xF800) == 0xF000 && (h2 & 0x8000)) {
-        int op1 = (h2 >> 12) & 0x7;             /* bits 14:12 of h2 */
+        /* Four encodings share this group, and they are selected by exactly two
+         * bits of h2: bit 14 says call-or-branch, bit 12 picks within the pair.
+         *
+         *   bit14 bit12
+         *     0     0     B<cond>.W (T3), or a system instruction
+         *     0     1     B.W       (T4)
+         *     1     0     BLX imm   (T2)
+         *     1     1     BL        (T1)
+         *
+         * Masking bits 14:12 together and testing `& 5` conflates them, which
+         * is what was here: `== 5` caught only BL, `== 4` caught BLX imm and
+         * called it B.W, and real B.W matched neither and fell through to the
+         * CONDITIONAL path — where it read a cond field that does not exist in
+         * T4 and assembled its offset with T3's 21-bit layout. Every
+         * unconditional wide branch was getting a wrong target and a bogus
+         * condition, and the one that surfaced it was a tail call into an
+         * import stub landing two bytes past the stub. */
+        int is_call = (h2 >> 14) & 1;
+        int low     = (h2 >> 12) & 1;
 
-        if ((op1 & 0x5) == 0x5) {               /* x1x1 -> BL / BLX imm */
-            set(o, A_CALL, (h2 & 0x1000) ? "bl" : "blx");
-            if (!(h2 & 0x1000)) o->switches_mode = 1;
+        /* The J1/J2 encoding: the two J bits are stored XORed with the sign
+         * bit, so they must be un-XORed before assembling the offset. Treating
+         * them as plain address bits gives a target that is right for short
+         * branches and wrong for long ones. */
+        uint32_t s   = (h1 >> 10) & 1;
+        uint32_t j1  = (h2 >> 13) & 1;
+        uint32_t j2  = (h2 >> 11) & 1;
+        uint32_t i1  = !(j1 ^ s);
+        uint32_t i2  = !(j2 ^ s);
+        uint32_t hi  = (s << 24) | (i1 << 23) | (i2 << 22)
+                     | ((uint32_t)(h1 & 0x03FF) << 12);
 
-            /* The J1/J2 encoding: the two J bits are stored XORed with the sign
-             * bit, so they must be un-XORed before assembling the offset.
-             * Treating them as plain address bits gives a target that is right
-             * for short branches and wrong for long ones. */
-            uint32_t s   = (h1 >> 10) & 1;
-            uint32_t j1  = (h2 >> 13) & 1;
-            uint32_t j2  = (h2 >> 11) & 1;
-            uint32_t i1  = !(j1 ^ s);
-            uint32_t i2  = !(j2 ^ s);
-            uint32_t imm = (s << 24) | (i1 << 23) | (i2 << 22)
-                         | ((uint32_t)(h1 & 0x03FF) << 12)
-                         | ((uint32_t)(h2 & 0x07FF) << 1);
+        if (is_call && low) {                   /* BL */
+            set(o, A_CALL, "bl");
             o->has_target = 1;
-            o->target = o->addr + 4 + sign_extend(imm, 25);
+            o->target = o->addr + 4
+                      + sign_extend(hi | ((uint32_t)(h2 & 0x07FF) << 1), 25);
             return;
         }
 
-        if ((op1 & 0x5) == 0x4) {               /* x10x -> B.W unconditional */
+        if (is_call) {                          /* BLX immediate */
+            /* Two things differ from BL and both matter. The offset is a
+             * multiple of FOUR — the low encoding field is imm10L, bit 0 is
+             * the H bit and is not part of it — and the base is Align(PC,4),
+             * not PC, because the destination is ARM code and ARM
+             * instructions are word-aligned. Using PC gives a target two bytes
+             * high whenever the instruction sits at an odd halfword, which is
+             * half the time. */
+            set(o, A_CALL, "blx imm");
+            o->switches_mode = 1;
+            o->has_target = 1;
+            o->target = ((o->addr + 4) & ~3u)
+                      + sign_extend(hi | ((uint32_t)(h2 & 0x07FE) << 1), 25);
+            return;
+        }
+
+        if (low) {                              /* B.W, unconditional */
             /* `op` matters as much as the class. The class routes the emitter's
              * fallback, but only `op` reaches the switch that actually
              * translates a branch — leaving it OP_NONE meant every wide branch
@@ -687,30 +720,23 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
             o->op = OP_B;
             o->cond = ARM_COND_AL;
             set(o, A_BRANCH, "b.w");
-            uint32_t s   = (h1 >> 10) & 1;
-            uint32_t j1  = (h2 >> 13) & 1;
-            uint32_t j2  = (h2 >> 11) & 1;
-            uint32_t i1  = !(j1 ^ s);
-            uint32_t i2  = !(j2 ^ s);
-            uint32_t imm = (s << 24) | (i1 << 23) | (i2 << 22)
-                         | ((uint32_t)(h1 & 0x03FF) << 12)
-                         | ((uint32_t)(h2 & 0x07FF) << 1);
             o->has_target = 1;
-            o->target = o->addr + 4 + sign_extend(imm, 25);
+            o->target = o->addr + 4
+                      + sign_extend(hi | ((uint32_t)(h2 & 0x07FF) << 1), 25);
             return;
         }
 
-        /* x0x -> conditional B.W, or a system instruction when the condition
-         * field is 111x. */
+        /* Conditional B.W, or a system instruction when the condition field is
+         * 111x. */
         if (((h1 >> 7) & 0xE) == 0xE) { set(o, A_SYS, "sys"); return; }
         o->op = OP_B;
         o->cond = (uint8_t)((h1 >> 6) & 0xF);
         set(o, A_BRANCH, "b<cond>.w");
         o->conditional = 1;
+        /* T3 has its own layout: a 6-bit high field rather than 10, and J1/J2
+         * placed directly rather than un-XORed with S. Reusing the raw s/j1/j2
+         * read above, since only the assembly differs. */
         {
-            uint32_t s    = (h1 >> 10) & 1;
-            uint32_t j1   = (h2 >> 13) & 1;
-            uint32_t j2   = (h2 >> 11) & 1;
             uint32_t imm  = (s << 20) | (j2 << 19) | (j1 << 18)
                           | ((uint32_t)(h1 & 0x003F) << 12)
                           | ((uint32_t)(h2 & 0x07FF) << 1);

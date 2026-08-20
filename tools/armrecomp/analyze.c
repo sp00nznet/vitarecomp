@@ -53,6 +53,25 @@ static void add_func(vf_result *r, uint32_t addr, arm_mode mode, uint8_t heur) {
     f->from_heuristic = heur;
 }
 
+/* Should a mode-switching call be followed into ARM?
+ *
+ * Only when the target is a known import stub. The stubs are this module's ARM
+ * code — placeholder bodies the loader patches — and a BLX to one is the
+ * ordinary way a Thumb module calls firmware. A BLX-immediate pointing
+ * anywhere else is, on this corpus, a misdecode: the tail of .text is
+ * read-only data, and data decoded as Thumb produces plausible BLX encodings
+ * in quantity.
+ *
+ * Refusing matters more here than for any other seed, because the two decoders
+ * fail differently. The Thumb decoder returns UNKNOWN often enough to stop a
+ * runaway walk; the ARM decoder assigns a class to every op value, so it never
+ * stops on its own. One bad ARM seed does not produce one bad function, it
+ * produces thousands of instructions of confident nonsense — 152,919 of them
+ * before this check existed, against 1.58 million real ones. */
+static int arm_seed_ok(const vm_module *mod, uint32_t target) {
+    return vm_find_stub(mod, target) != NULL;
+}
+
 /* --- walking one function --------------------------------------------------- */
 /*
  * Follows local control flow from `start`, marking instruction starts and
@@ -62,8 +81,8 @@ static void add_func(vf_result *r, uint32_t addr, arm_mode mode, uint8_t heur) {
  * every instruction still gets decoded exactly once, from the right mode.
  */
 
-static void walk(const vm_image *img, vf_result *r, seedq *q,
-                 uint32_t start, arm_mode mode, vf_func *fn) {
+static void walk(const vm_image *img, const vm_module *mod, vf_result *r,
+                 seedq *q, uint32_t start, arm_mode mode, vf_func *fn) {
     const uint8_t *text = img->data + img->seg_file;
     const uint32_t base = img->seg_vaddr;
     const uint32_t len  = img->seg_len;
@@ -100,8 +119,31 @@ static void walk(const vm_image *img, vf_result *r, seedq *q,
                     arm_mode cm = in.switches_mode
                                 ? (s.mode == ARM_T32 ? ARM_A32 : ARM_T32)
                                 : s.mode;
-                    sq_push(q, in.target, cm, 0);
-                    r->seeds_call++;
+                    /* A mode-switching call is only followed into ARM when the
+                     * target is a known import stub.
+                     *
+                     * The stubs are the module's ARM code — placeholder bodies
+                     * the loader patches — and a BLX to one is the ordinary way
+                     * a Thumb module calls firmware. A BLX-immediate pointing
+                     * anywhere else is, on this corpus, a misdecode: the tail of
+                     * .text is read-only data, and data decoded as Thumb
+                     * produces plausible BLX encodings.
+                     *
+                     * Refusing matters more here than for any other seed
+                     * because of an asymmetry between the decoders. The Thumb
+                     * decoder returns UNKNOWN often enough to stop a runaway
+                     * walk; the ARM decoder assigns a class to every op value,
+                     * so it never stops on its own. One bad ARM seed does not
+                     * produce one bad function, it produces thousands of
+                     * instructions of confident nonsense — 152,919 of them
+                     * before this check existed. */
+                    if (cm == ARM_A32 && s.mode == ARM_T32 &&
+                        !arm_seed_ok(mod, in.target)) {
+                        r->seeds_arm_refused++;
+                    } else {
+                        sq_push(q, in.target, cm, 0);
+                        r->seeds_call++;
+                    }
                 } else {
                     /* A register-form BLX. It is a call whose destination is
                      * computed, so it seeds nothing and the callee is reachable
@@ -318,6 +360,13 @@ int vf_discover(const vm_image *img, const vm_module *mod, vf_result *out) {
             if (arm_decode(text, base, img->seg_len, base + off, ARM_T32, &in) == 0) continue;
             if (in.cls == A_CALL && in.has_target &&
                 in.target >= base && in.target < base + img->seg_len) {
+                /* Same rule as the descent above. This sweep decodes every
+                 * halfword of .text including its data, so it is the site that
+                 * manufactures bogus mode switches in bulk. */
+                if (in.switches_mode && !arm_seed_ok(mod, in.target)) {
+                    out->seeds_arm_refused++;
+                    continue;
+                }
                 sq_push(&q, in.target, in.switches_mode ? ARM_A32 : ARM_T32, 0);
             }
         }
@@ -350,7 +399,7 @@ int vf_discover(const vm_image *img, const vm_module *mod, vf_result *out) {
 
         FN_MARK(s.addr);
         add_func(out, s.addr, s.mode, s.heur);
-        walk(img, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
+        walk(img, mod, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
     }
 
     /* 4. Shape recovery, after everything principled has been exhausted, so it
@@ -365,7 +414,7 @@ int vf_discover(const vm_image *img, const vm_module *mod, vf_result *out) {
 
         FN_MARK(s.addr);
         add_func(out, s.addr, s.mode, s.heur);
-        walk(img, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
+        walk(img, mod, out, &q, s.addr, s.mode, &out->funcs[out->count - 1]);
     }
 
     #undef FN_MARK

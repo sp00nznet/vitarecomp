@@ -366,6 +366,68 @@ static void test_bitfield(void) {
     printf("  bitfield                       ok\n");
 }
 
+/* The four encodings sharing the 32-bit branch group are selected by two bits
+ * of the second halfword: bit 14 (call or branch) and bit 12 (which of the
+ * pair). Masking bits 14:12 together and testing `& 5` conflates them, which
+ * decoded BLX-immediate as B.W and sent real B.W down the CONDITIONAL path,
+ * where it read a cond field that does not exist in its encoding.
+ *
+ * Encodings below are assembled from the architecture's rules, and the
+ * expected targets worked out by hand.
+ */
+static void test_wide_branch_group(void) {
+    memset(code, 0, sizeof(code));
+
+    /* BLX immediate. h2: bit15=1, bit14=1, bit13=J1, bit12=0, bit11=J2,
+     * bits10:1=imm10L, bit0=H(must be 0). With S=0, J1=J2=1 gives I1=I2=0, so
+     * the offset is imm10L*4 = 4 here.
+     *
+     * The property that matters: the base is Align(PC,4), NOT PC, because the
+     * destination is ARM code. Placed at an ODD halfword the two differ, and
+     * using PC lands two bytes high — which is how a tail call into an import
+     * stub arrived two bytes past the stub. */
+    put16(2, 0xF000); put16(4, 0xE802);
+    arm_insn in = dec(ARM_T32, BASE + 2);
+    assert(in.width == 4);
+    assert(in.cls == A_CALL);          /* a call, not a branch */
+    assert(in.switches_mode);          /* and it changes instruction set */
+    assert(in.has_target);
+    /* pc = 0x1006, Align(pc,4) = 0x1004, +4 => 0x1008. Using pc would give
+     * 0x100A, and an ARM target is never at an odd halfword. */
+    assert(in.target == BASE + 8);
+    assert((in.target & 3) == 0);
+
+    /* The SAME encoding one halfword later, where PC is already aligned. The
+     * offset is identical, so the target must move by 4 — not by 2. That is
+     * the assertion the old code could not pass. */
+    put16(4, 0xF000); put16(6, 0xE802);
+    in = dec(ARM_T32, BASE + 4);
+    assert(in.cls == A_CALL && in.target == BASE + 12);
+
+    /* B.W: bit14=0, bit12=1. Unconditional, a branch, and NOT a call. */
+    put16(8, 0xF000); put16(10, 0xB802);
+    in = dec(ARM_T32, BASE + 8);
+    assert(in.cls == A_BRANCH && in.op == OP_B);
+    assert(!in.conditional && in.cond == ARM_COND_AL);
+    assert(!in.switches_mode);
+    assert(in.target == BASE + 16);    /* pc(0x100C) + 4 */
+
+    /* BL: bit14=1, bit12=1. A call that does not change instruction set, and
+     * unlike BLX its offset is a multiple of two, not four. */
+    put16(16, 0xF000); put16(18, 0xF802);
+    in = dec(ARM_T32, BASE + 16);
+    assert(in.cls == A_CALL && !in.switches_mode);
+    assert(in.target == BASE + 24);    /* pc(0x1014) + 4 */
+
+    /* B<cond>.W: bit14=0, bit12=0. Keeps T3's own layout and a real
+     * condition, which is exactly what B.W must NOT be given. */
+    put16(24, 0xF000); put16(26, 0x8000);
+    in = dec(ARM_T32, BASE + 24);
+    assert(in.cls == A_BRANCH && in.conditional);
+
+    printf("  wide branch group, all four    ok\n");
+}
+
 static void test_bl_target(void) {
     memset(code, 0, sizeof(code));
 
@@ -615,6 +677,7 @@ int main(void) {
     test_thumb_expand_imm();
     test_t32_operands();
     test_bitfield();
+    test_wide_branch_group();
     test_bl_target();
     test_branch_targets();
     test_mode_switches();
