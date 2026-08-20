@@ -239,3 +239,60 @@ because the trap message named the symptom accurately and still pointed at the
 wrong subsystem — and because the diagnostic only became readable at all once
 `vita_dispatch` was given the address of the transfer as well as its
 destination. It had been reporting `at 0x00000000`.
+
+
+## The same bug five times, and what finally stopped it
+
+`cpu.h` deliberately has no `pc` variable. A recompiled program has no program
+counter, so any instruction that genuinely reads the PC has its value resolved
+at translation time — and the absence of the variable means an emitter path
+that gets this wrong produces C that will not compile.
+
+That design caught the bug. It did not stop it recurring:
+
+1. `MOV pc, rN` decoded as an ALU write and emitted `pc = r6`.
+2. `VLDR` from a literal pool built its own address expression.
+3. `STRD` with `rn == 15` did the same.
+4. `MOVT`/`MOVW`/`ADDW` with `rd == 15`.
+5. `bx pc`, a register list naming the PC, and a register-offset address.
+
+Five rounds, each fixed at the site, each followed by another site. The reason
+is visible in hindsight: the rule was never written anywhere the code could
+enforce it, so every new translation had to remember it independently, and
+eventually one did not.
+
+The rule is two sentences. **A destination of r15 is a branch** — the decoder
+classifies the real ones as branches, so anything still carrying r15 as a
+destination is an encoding the emitter does not model, and it must trap. **A
+source of r15 is a constant** — the instruction's own address plus four, which
+is how the architecture defines reading the PC, and it must resolve.
+
+Both halves now live in one place each: a single guard on the path every
+translation takes, and a single `src_name()` that every source operand goes
+through. `reg_name()` is left naming only destinations, which the guard covers.
+
+Two things about the fix are worth keeping:
+
+**Scoping the guard needed measurement, not reasoning.** The first version
+trapped on `rt == 15` unconditionally, which is right for a load or a store and
+wrong for `VMRS APSR_nzcv, FPSCR`, where the same field means "the condition
+flags". That cost 3,827 working instructions and showed up immediately as
+translation dropping 98.87% to 98.63% — a number moving the wrong way is a
+better reviewer than re-reading the diff.
+
+**One site is neither a source nor a destination.** The `VLDM`/`VSTM` base
+register is written back, so it is an lvalue; resolving r15 there would emit an
+assignment to a constant. It traps. A rule with two cases will meet a third.
+
+## A prefix hides the bugs that matter
+
+Every one of rounds 2 through 5 was reachable only by building the *whole*
+module. The 100-function check was real and passed, and it covered a contiguous
+region of `.text` that happened to contain no VFP literal, no `STRD` from a
+literal pool, and no PC destination.
+
+The same is true of what made rounds 4 and 5 findable at all: they are in
+address ranges nothing had ever compiled, because the functions containing them
+were not discovered until data-segment scanning found the constructor table.
+Better discovery did not just add coverage — it added *reach*, and reach is
+what exposes emitter bugs.
