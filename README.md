@@ -115,60 +115,57 @@ key material anywhere in it.
 | **1 — Container stack** | SCE/SELF, appinfo, ELF32, program headers, segment table; bounds-checked, named refusal for PFS retail dumps, encryption flag cross-checked against zlib headers | ✅ Complete |
 | **2 — Inflate & reassemble** | DEFLATE + zlib written not vendored; **15/15 corpus modules extract and round-trip**, 236 KB → 53 MB | ✅ Complete |
 | **3 — Decoder** | ARMv7-A + Thumb-2, width determination, control flow, IT blocks, NEON/VFP classed; `armrecomp cover` over 16 modules | ✅ Complete |
-| **4 — Discovery** | `.sce_module_info`, import/export tables, recursive descent carrying mode state, pointer-shape recovery over **both code and data** segments, with pointer tables read as tables; 20,989 functions | ✅ Complete |
+| **4 — Discovery** | `.sce_module_info`, import/export tables, recursive descent carrying mode state, pointer-shape recovery over **both code and data** segments, with pointer tables read as tables; 21,495 functions, 83.3% of `.text` covered | ✅ Complete |
 | **5 — Emitter** | ARM → readable C, literal folding, run-time dispatch, scalar VFP, wide branches. **Generated C compiles, links, and runs** | ✅ Complete |
 | **6 — Runtime & HLE** | Runtime landed; NID resolution 519/524 (99.0%); imports bound so every firmware call traps *by name*. `sceGxm` / `sceKernel` / `SceLibc` bodies outstanding | 🔨 In progress |
 
-**Translation rate on *Uncharted: Fight for Fortune*: 98.87% of instructions**,
-measured over the whole module — all 20,989 discovered functions, 1,583,445
+**Translation rate on *Uncharted: Fight for Fortune*: 98.95% of instructions**,
+measured over the whole module — all 21,495 discovered functions, 1,837,610
 instructions. The rest emit named traps, never silence:
 
 ```
 still trapping, by kind:
-  simd/vfp                       9784    0.62% of all instructions
-  branch: target not a function  5363    0.34%
-  ?                              2507    0.16%
-  ldm/stm                        1820    0.11%
-  misc                           1019    0.06%
-  indirect transfer               740    0.05%
-  mla/mls                         518    0.03%
-  ldm/stm.w                       393    0.02%
-  sys                             285    0.02%
-  svc                             224    0.01%
-  sat                             139    0.01%
-  branch: target off-segment      131    0.01%
-  udf                             119    0.01%
-  alu.w / alu.w rd=pc             180    0.01%
-  cbz/cbnz                         61    0.00%
-  writes pc                        34    0.00%
-  sbfx / bfi                       11    0.00%
+  simd/vfp                      10716    0.58% of all instructions
+  ?                              3009    0.16%
+  ldm/stm                        1575    0.09%
+  branch: target not a function   1428    0.08%
+  misc                            902    0.05%
+  indirect transfer               788    0.04%
+  mla/mls                         507    0.03%
+  alu (ARM stub bodies)           504    0.03%
+  ldm/stm.w                       401    0.02%
+  svc / sys                       335    0.02%
 ```
 
-NEON is the largest remaining bucket at 0.63%, so about **99.4% is reachable
-without touching the vector unit**. Breakdown in
+NEON is the largest remaining bucket at 0.58%, and it is now what the *running*
+program stops on — everything before it in the boot path is translated. The
+`alu`/`svc` entries are the ARM bodies of the 524 firmware import stubs, which
+are meant to be replaced by HLE rather than translated. Breakdown in
 [docs/TRANSLATION.md](docs/TRANSLATION.md).
 
 The `sbfx`/`bfi` residue is deliberate: those 11 are extracts running off the
 end of the register, which is UNPREDICTABLE and comes from a linear sweep over
 literal pools. They trap rather than being clamped.
 
-**Verified end to end at scale.** `emit` 1,500 functions → 15 MB of C →
-compiles, links against the runtime, and runs. It loads the ELF's own segments
-into guest memory, registers the dispatch table, calls `module_start`, and
-reaches the C++ runtime init — where it stops on the first firmware function
-the game actually wants:
+**The whole module builds and runs.** All 21,495 functions — 135 MB of
+generated C — compile and link into a 39 MB executable. It loads the ELF's own
+segments into guest memory, registers the dispatch table, calls `module_start`,
+walks all 551 C++ static constructors, and reaches game code before stopping
+on a NEON instruction:
 
 ```
-vitarecomp: unimplemented firmware import SceLibc::__cxa_set_dso_handle_main
-            at 0x814B9590 (NID 0xBFE02B3A)
+vitarecomp: untranslated instruction at 0x81293F06 (raw 0xEF800050): simd
 ```
 
-That is the intended state for phase 6: the translation is done talking, and
-what remains is HLE. Indirect transfers resolve through the same table as
-direct ones — 19,644 entries for this module, 19,120 functions and 524 import
-stubs merged and sorted — because a module reaches firmware through pointers as
-well as through `BL`, and `module_start` makes its very first firmware call
-that way.
+Getting there needed the boot path complete: indirect transfers resolve through
+the same table as direct ones (functions and import stubs merged and sorted),
+because a module reaches firmware through pointers as well as through `BL` and
+`module_start` makes its very first firmware call that way; and a first batch of
+`SceLibc` — the C++/CRT init, the mem/str family, and a guest heap.
+
+> **Compiling at this scale:** each function becomes its own COMDAT section and
+> a COFF object indexes at most 65,535, so MSVC needs `/bigobj` on the generated
+> file. It is a count limit, not a size limit. `armrecomp emit` says so itself.
 
 ## Documentation
 
@@ -229,7 +226,7 @@ committing:
 
 | Title | Why | Status |
 |---|---|---|
-| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 20,989 functions emitted, **98.87% translated**, 524 imports bound, compiles and runs |
+| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 21,495 functions emitted, **98.95% translated**, 18,563 firmware calls bound; runs into game code |
 
 ## Relationship to Other Projects
 
