@@ -64,12 +64,15 @@ obstacle on this platform.
 - [x] `armrecomp discover`
 - [ ] `SCE_RELA` relocation seeding — not applicable to `ET_SCE_EXEC` modules,
       which is the whole launch-window catalogue, but needed for 2015+ titles
-- [ ] **Scan the DATA segment for function pointers.** Shape recovery only
-      sweeps the executable segment, but the C++ `.init_array` lives in the rw
-      segment — so **all 551 static constructors are invisible to discovery**,
-      including the module's very first one at `0x81000000`. They are the first
-      code the program runs. `vm_image` models one segment and would need to
-      carry them all
+- [x] **Scan the DATA segment for function pointers**, and read pointer tables
+      as tables. The C++ `.init_array` lives in the rw segment, so all 551
+      static constructors were invisible; a run of 4+ Thumb-tagged in-range
+      words is a table, and inside one the prologue filter is skipped.
+      0 → 551 of 551
+- [x] **Refuse unconfirmed ARM seeds.** A mode-switching call is followed into
+      ARM only when its target is a known import stub. The ARM decoder assigns
+      a class to every op value and so never stops on a runaway walk — 304 bad
+      seeds were producing 152,919 instructions of data-as-code
 - [ ] Jump-table recognition — 17,970 indirect call sites remain unresolved
 - [ ] Function *boundary* quality: extents currently absorb tail calls
 
@@ -117,8 +120,14 @@ obstacle on this platform.
       `[rN, #-imm]` form. Found only by building at scale
 - [x] **Verified at scale**: 1,500 functions → 15 MB of C → compiles, links,
       and runs, reaching the first indirect transfer at `0x8100B936`
-- [ ] Advanced SIMD (NEON) — 9,646 instructions (0.63%), and now genuinely the
-      only hard piece left. *Advanced SIMD and NEON are the same instruction
+- [x] **`BLX` immediate was decoded as `B.W`, and `B.W` as a conditional
+      branch.** Four encodings share the 32-bit branch group and are selected
+      by bits 14 and 12 of the second halfword; masking 14:12 together
+      conflated them. BLX also computes its target from `Align(PC,4)`, not
+      `PC`. Import calls bound 3,917 → 18,563; coverage 68.6% → 83.3%
+- [ ] Advanced SIMD (NEON) — 10,716 instructions (0.58%), and now not just the
+      largest remaining bucket but the thing the RUNNING program stops on:
+      everything earlier in the boot path is translated. *Advanced SIMD and NEON are the same instruction
       set — ARM's formal name and the marketing one — so this is one job.*
 - [ ] ARM (A32) operand decoding — a small minority of this corpus. The A32
       media space is also currently classed `A_UNDEF`, which is wrong: `op == 3`
