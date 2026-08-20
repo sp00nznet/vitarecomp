@@ -115,32 +115,33 @@ key material anywhere in it.
 | **1 — Container stack** | SCE/SELF, appinfo, ELF32, program headers, segment table; bounds-checked, named refusal for PFS retail dumps, encryption flag cross-checked against zlib headers | ✅ Complete |
 | **2 — Inflate & reassemble** | DEFLATE + zlib written not vendored; **15/15 corpus modules extract and round-trip**, 236 KB → 53 MB | ✅ Complete |
 | **3 — Decoder** | ARMv7-A + Thumb-2, width determination, control flow, IT blocks, NEON/VFP classed; `armrecomp cover` over 16 modules | ✅ Complete |
-| **4 — Discovery** | `.sce_module_info`, import/export tables, recursive descent carrying mode state, prologue-filtered pointer-shape recovery; 18,978 functions | ✅ Complete |
+| **4 — Discovery** | `.sce_module_info`, import/export tables, recursive descent carrying mode state, pointer-shape recovery over **both code and data** segments, with pointer tables read as tables; 20,989 functions | ✅ Complete |
 | **5 — Emitter** | ARM → readable C, literal folding, run-time dispatch, scalar VFP, wide branches. **Generated C compiles, links, and runs** | ✅ Complete |
 | **6 — Runtime & HLE** | Runtime landed; NID resolution 519/524 (99.0%); imports bound so every firmware call traps *by name*. `sceGxm` / `sceKernel` / `SceLibc` bodies outstanding | 🔨 In progress |
 
-**Translation rate on *Uncharted: Fight for Fortune*: 98.86% of instructions**,
-measured over the whole module — all 19,120 discovered functions, 1,532,679
+**Translation rate on *Uncharted: Fight for Fortune*: 98.87% of instructions**,
+measured over the whole module — all 20,989 discovered functions, 1,583,445
 instructions. The rest emit named traps, never silence:
 
 ```
 still trapping, by kind:
-  simd/vfp                       9646    0.63% of all instructions
-  branch: target not a function  4736    0.31%
-  ?                              2468    0.16%
-  ldm/stm                        1820    0.12%
-  misc                           1019    0.07%
-  indirect transfer               735    0.05%
-  mla/mls                         515    0.03%
-  ldm/stm.w                       384    0.03%
+  simd/vfp                       9784    0.62% of all instructions
+  branch: target not a function  5363    0.34%
+  ?                              2507    0.16%
+  ldm/stm                        1820    0.11%
+  misc                           1019    0.06%
+  indirect transfer               740    0.05%
+  mla/mls                         518    0.03%
+  ldm/stm.w                       393    0.02%
   sys                             285    0.02%
   svc                             224    0.01%
   sat                             139    0.01%
   branch: target off-segment      131    0.01%
   udf                             119    0.01%
-  alu.w                            91    0.01%
-  cbz/cbnz                         59    0.00%
-  sbfx / bfi                        11    0.00%
+  alu.w / alu.w rd=pc             180    0.01%
+  cbz/cbnz                         61    0.00%
+  writes pc                        34    0.00%
+  sbfx / bfi                       11    0.00%
 ```
 
 NEON is the largest remaining bucket at 0.63%, so about **99.4% is reachable
@@ -228,7 +229,7 @@ committing:
 
 | Title | Why | Status |
 |---|---|---|
-| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 19,120 functions emitted, **98.86% translated**, 524 imports bound, compiles and runs |
+| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 20,989 functions emitted, **98.87% translated**, 524 imports bound, compiles and runs |
 
 ## Relationship to Other Projects
 

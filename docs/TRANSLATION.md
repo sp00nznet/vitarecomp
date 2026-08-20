@@ -72,27 +72,28 @@ into `MOV` and `ORN` into `MVN`; `rd == 15` with `S` set turns
 actionable and "SIMD is 65% of what is left" is:
 
 ```
-still trapping, by kind:            (all 19,120 functions, 1,532,679 insns)
-  simd/vfp                       9646    0.63% of all instructions
-  branch: target not a function  4736    0.31%
-  ?                              2468    0.16%
-  ldm/stm                        1820    0.12%
-  misc                           1019    0.07%
-  indirect transfer               735    0.05%
-  mla/mls                         515    0.03%
-  ldm/stm.w                       384    0.03%
+still trapping, by kind:            (all 20,989 functions, 1,583,445 insns)
+  simd/vfp                       9784    0.62% of all instructions
+  branch: target not a function  5363    0.34%
+  ?                              2507    0.16%
+  ldm/stm                        1820    0.11%
+  misc                           1019    0.06%
+  indirect transfer               740    0.05%
+  mla/mls                         518    0.03%
+  ldm/stm.w                       393    0.02%
   sys                             285    0.02%
   svc                             224    0.01%
   sat                             139    0.01%
   branch: target off-segment      131    0.01%
   udf                             119    0.01%
-  alu.w                            91    0.01%
-  cbz/cbnz                         59    0.00%
+  alu.w / alu.w rd=pc             180    0.01%
+  cbz/cbnz                         61    0.00%
+  writes pc                        34    0.00%
   sbfx / bfi                       11    0.00%
 ```
 
 **Measure the whole module, not a prefix.** The same run over the first 1,500
-functions reports 98.33%; over all 19,120 it is **98.86%**. A prefix is not a
+functions reports 98.33%; over all 20,989 it is **98.87%**. A prefix is not a
 sample — functions are emitted in address order, and the low end of `.text` is
 not representative of it. Every figure here is the full-module one.
 
