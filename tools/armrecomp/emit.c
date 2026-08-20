@@ -355,6 +355,38 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
         }
     }
 
+    /* A destination of r15 is a write to the PC, which is a BRANCH. The
+     * decoder classifies the real ones as branches, so anything still carrying
+     * r15 as a destination here is an encoding this emitter does not model —
+     * and emitting it would print `pc`, which cpu.h deliberately does not
+     * define.
+     *
+     * One guard rather than one per case, because one per case is what was
+     * tried and it kept not holding: this is the FOURTH distinct path to reach
+     * a build emitting a bare `pc` (MOV pc,rN; VLDR from a literal pool; STRD;
+     * and MOVT/MOVW/ADDW). Each new translation had to remember the rule
+     * independently, and eventually one did not. Checking it in the one place
+     * every translation passes through is the only version that stays fixed.
+     *
+     * Source operands are not covered here and must not be: reg_operand()
+     * resolves rm == 15 to the instruction's own address at translation time,
+     * which is correct and is how PC-relative arithmetic works at all.
+     *
+     * Scoped in two ways, both learned by getting it wrong. `rt == 15` only
+     * means the PC in a LOAD or STORE: in `VMRS APSR_nzcv, FPSCR` the same
+     * field encodes "the condition flags", and a blanket rule trapped 3,827
+     * working instructions. And an instruction the decoder already left as
+     * OP_NONE is going to trap anyway with a more specific name than this one,
+     * so it is left alone rather than relabelled. */
+    int writes_pc = (in->rd == 15)
+                 || ((in->cls == A_LOAD || in->cls == A_STORE)
+                     && (in->rt == 15 || in->rt2 == 15));
+    if (in->op != OP_NONE && writes_pc) {
+        trap(f, in, "writes pc");
+        note_trap(st, "writes pc");
+        return 0;
+    }
+
     /* An instruction made conditional by an IT block, or a conditional branch,
      * is wrapped rather than translated differently. Getting this wrong is
      * invisible until a condition happens to be false. */
@@ -556,7 +588,12 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             int slot = 0;
             for (int i = 0; i < 16; i++) {
                 if (!(in->reglist & (1u << i))) continue;
-                fprintf(f, "    vita_write32(sp + %d, %s);\n", slot * 4, reg_name(i));
+                /* A register list can name the PC. Its stored value is this
+                 * instruction's own address plus four, which is known here —
+                 * the same rule as any other PC source, and the reason this
+                 * goes through reg_operand rather than reg_name. */
+                { char rv[64]; reg_operand(rv, sizeof(rv), i, in);
+                  fprintf(f, "    vita_write32(sp + %d, %s);\n", slot * 4, rv); }
                 slot++;
             }
             break;
@@ -642,8 +679,13 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
              * translation. BX is a tail transfer and does not come back; BLX is
              * a call and does. */
             if (in->rm == ARM_NO_REG) { ok = 0; break; }
-            if (in->op == OP_BX) fprintf(f, "    vita_dispatch(0x%08X, %s); return;\n", in->addr, reg_name(in->rm));
-            else                 fprintf(f, "    vita_dispatch(0x%08X, %s);\n", in->addr, reg_name(in->rm));
+            /* Through reg_operand, not reg_name. `bx pc` is a real (if odd)
+             * instruction, and as a SOURCE the PC is a constant this pass
+             * knows — resolving it is correct where naming it would not
+             * compile. */
+            { char rm[64]; reg_operand(rm, sizeof(rm), in->rm, in);
+              if (in->op == OP_BX) fprintf(f, "    vita_dispatch(0x%08X, %s); return;\n", in->addr, rm);
+              else                 fprintf(f, "    vita_dispatch(0x%08X, %s);\n", in->addr, rm); }
             break;
 
         /* --- scalar VFP ---------------------------------------------------
