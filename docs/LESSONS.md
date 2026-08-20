@@ -184,3 +184,58 @@ checking nothing. The build now strips `NDEBUG` for test targets, and
 `test_container.c` `#error`s if it ever comes back — a silent green run is worse
 than a red one.
 
+
+
+## The verification you keep deferring is the one that finds the bug
+
+The generated C was confirmed to compile, link and run at 100 functions. Seven
+toolkit changes later — VFP, dispatch, wide branches, VFP list forms, bitfields
+— it had not been re-confirmed, and the README carried "it still builds at
+scale" as a stated assumption rather than a result.
+
+It did not build. `OP_VLDR`/`OP_VSTR` formatted their own address expression
+instead of going through the shared `address()` helper, so a PC-relative VFP
+load emitted `vita_read32(pc + 0x18)` — and `cpu.h` deliberately has no `pc`.
+The same design decision that caught `MOV pc, rN` caught this one, three months
+later, the moment anything actually invoked a compiler.
+
+It survived that long for a mundane reason: the 100-function sample contained
+no VFP literal. The check was real, and it was run, and it covered a prefix of
+the program that did not include the construct that would break.
+
+Fixing it at the shared helper rather than at the caller cured a second bug
+nothing had noticed. `address()` ignored the U bit entirely, so the T32 8-bit
+`[rN, #-imm]` form — which `decode.c` correctly decodes, setting `mem_add = 0`
+— was emitting `rN + imm` and reading from the wrong side of the base register.
+That one affected ordinary integer loads and stores, silently, everywhere.
+
+## A prefix is not a sample
+
+The same emit run reports **98.33%** over the first 1,500 functions and
+**98.86%** over all 19,120. Functions come out in address order, so "the first
+N" is a contiguous region of `.text`, not a cross-section of it — and the low
+end of this module is denser in the constructs that still trap.
+
+Every headline figure in these docs was a prefix measurement until this was
+noticed. They were not wrong about direction, and each one understated the
+result.
+
+## The first indirect transfer is a firmware call, not missing code
+
+With the build fixed, the recompiled `module_start` runs and stops at
+`0x8100B936` with `unresolved indirect transfer -> 0x814B9590`. The obvious
+reading is a discovery gap: an address that should have been recognised as a
+function and was not.
+
+It is not. `0x814B9590` is `SceLibc::__cxa_set_dso_handle_main` — an import
+stub. Imports bind at emit time on a direct `BL` to a stub address, but this
+call is reached *through a pointer*, so it never went through that path;
+`vita_dispatch` searched the function table, correctly failed to find it, and
+trapped.
+
+The fix is in the dispatcher, not in discovery: an indirect transfer to a known
+stub address is a firmware call and should be routed as one. Worth recording
+because the trap message named the symptom accurately and still pointed at the
+wrong subsystem — and because the diagnostic only became readable at all once
+`vita_dispatch` was given the address of the transfer as well as its
+destination. It had been reporting `at 0x00000000`.
