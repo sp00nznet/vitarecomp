@@ -43,9 +43,17 @@ typedef struct {
 /* Emit discovered functions to `out`. `limit` caps the number emitted (0 for
  * all), which matters for bring-up: 19k functions is 133 MB of C, and getting
  * a few hundred to compile and link proves the translation is valid C long
- * before the whole module is worth building. */
+ * before the whole module is worth building.
+ *
+ * `impdir` receives ONE FILE PER IMPORT, which is not tidiness — it is what
+ * makes an import overridable. The defaults are meant to be built into a
+ * static library and listed after the runtime, and a linker pulls an archive
+ * member only for a symbol still undefined. At one member per function a real
+ * implementation simply wins. Put all 524 in a single translation unit and the
+ * ~500 unimplemented ones drag the whole object in, taking the implemented
+ * definitions with them and colliding with every real one. */
 int em_emit(const vm_image *img, const vm_module *mod, const nid_db *db,
-            const vf_result *disc, FILE *out, FILE *imports,
+            const vf_result *disc, FILE *out, const char *impdir,
             uint32_t limit, emit_stats *st);
 
 #endif /* ARMRECOMP_EMIT_H */

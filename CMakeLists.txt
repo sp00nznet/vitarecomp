@@ -44,6 +44,7 @@ add_library(vitarecomp STATIC
     src/loader.c
     src/dispatch.c
     src/vfp.c
+    src/hle_libc.c
 )
 
 target_include_directories(vitarecomp PUBLIC

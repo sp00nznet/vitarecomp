@@ -17,6 +17,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* One directory, portably. Not worth a dependency, and an existing directory
+ * is success — regenerating over a previous emit is the normal case. */
+#ifdef _WIN32
+#include <direct.h>
+#define make_dir(p) (_mkdir(p) == 0 || errno == EEXIST ? 0 : 1)
+#else
+#include <sys/stat.h>
+#define make_dir(p) (mkdir((p), 0777) == 0 || errno == EEXIST ? 0 : 1)
+#endif
+#include <errno.h>
+
 static const char *USAGE =
     "armrecomp â€” static-recompilation toolkit for PlayStation Vita\n"
     "\n"
@@ -720,22 +731,21 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
         vf_free(&r); free(buf); return 1;
     }
 
-    /* The import stubs go in their own file beside the functions, so the two
-     * can be regenerated independently and an implemented import is removed
-     * from one place. */
+    /* The import defaults go in their own directory beside the functions, one
+     * file each. Build them into a static library listed AFTER the runtime and
+     * implementing an import is just writing it — see emit.h. */
     char imppath[1024];
     snprintf(imppath, sizeof(imppath), "%s", outpath);
     char *dot = strrchr(imppath, '.');
     if (dot) *dot = '\0';
-    strncat(imppath, "_imports.c", sizeof(imppath) - strlen(imppath) - 1);
+    strncat(imppath, "_imports", sizeof(imppath) - strlen(imppath) - 1);
 
-    FILE *impf = fopen(imppath, "w");
-    if (!impf) fprintf(stderr, "armrecomp: cannot write %s\n", imppath);
+    if (make_dir(imppath) != 0)
+        fprintf(stderr, "armrecomp: cannot create %s\n", imppath);
 
     emit_stats st;
-    em_emit(&img, &vm, db, &r, f, impf, limit, &st);
+    em_emit(&img, &vm, db, &r, f, imppath, limit, &st);
     fclose(f);
-    if (impf) fclose(impf);
 
     printf("wrote %s\n", outpath);
     printf("  functions     %u\n", st.funcs);
@@ -771,8 +781,10 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
         if (st.traps_other)
             printf("  %-24s %8u\n", "(other kinds)", st.traps_other);
     }
-    if (impf)
-        printf("\nwrote %s\n  %u import stubs, each trapping by name\n",
+    if (st.imports_used)
+        printf("\nwrote %s/\n  %u import defaults, one file each, each trapping by name\n"
+               "  build them as a static library listed AFTER the runtime;\n"
+               "  implementing one is then just defining it\n",
                imppath, st.imports_used);
     printf("\nUntranslated instructions are named run-time traps, never silence.\n");
 

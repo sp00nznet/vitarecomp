@@ -28,6 +28,16 @@ void vita_mem_free(void);
  * point of failure instead of silent corruption elsewhere. */
 void *vita_mem_ptr(uint32_t addr, uint32_t len);
 
+/* Bytes backed from `addr` to the end of the region, or 0 if it is outside.
+ *
+ * The HLE needs this and `vita_mem_ptr` cannot answer it: a C string has no
+ * length until you find its terminator, so forwarding `strlen` to the host
+ * means scanning guest memory, and a scan with no bound runs off the
+ * allocation when the guest hands over a pointer to something that is not a
+ * string. Unlike a bad read this does not count as a bad access — asking how
+ * much is there is a legitimate question. */
+uint32_t vita_mem_avail(uint32_t addr);
+
 uint32_t vita_read32(uint32_t addr);
 uint16_t vita_read16(uint32_t addr);
 uint8_t  vita_read8 (uint32_t addr);

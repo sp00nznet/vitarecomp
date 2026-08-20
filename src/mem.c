@@ -41,6 +41,13 @@ void *vita_mem_ptr(uint32_t addr, uint32_t len) {
     return g_mem + off;
 }
 
+uint32_t vita_mem_avail(uint32_t addr) {
+    if (!g_mem || addr < g_base) return 0;
+    uint64_t off = (uint64_t)addr - g_base;
+    if (off >= g_size) return 0;
+    return (uint32_t)(g_size - off);
+}
+
 /* Unaligned access is legal on ARMv7 for ordinary loads and stores, so these
  * go through memcpy rather than a cast. A cast would be undefined behaviour on
  * an unaligned address and would fault outright on some hosts. */

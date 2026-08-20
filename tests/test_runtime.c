@@ -8,6 +8,7 @@
 
 #include "vitarecomp/recomp_rt.h"
 #include "vitarecomp/dispatch.h"
+#include "vitarecomp/hle.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -232,6 +233,98 @@ static void test_dispatch(void) {
     printf("  dispatch, thumb bit and order  ok\n");
 }
 
+/* --- HLE: SceLibc over guest memory ------------------------------------------
+ *
+ * These forward to the host C library, so the host's correctness is not what
+ * is in question here. The boundary is: every pointer argument is a GUEST
+ * address into a flat allocation, and the length of a C string is in the data
+ * rather than in the arguments. Both are checked.
+ */
+
+#define GBASE 0x81000000u
+
+/* Declared here rather than in hle.h. Every one of these is `void(void)` and
+ * the generated code declares the whole set already; a second list in a
+ * shipped header would only be something to keep in sync. */
+void vita_hle_strlen(void);
+void vita_hle_strcpy(void);
+void vita_hle_strncpy(void);
+void vita_hle_strchr(void);
+void vita_hle_memcpy(void);
+void vita_hle_memcmp(void);
+void vita_hle_malloc(void);
+void vita_hle__sceLibcErrnoLoc(void);
+void vita_hle___cxa_guard_acquire(void);
+void vita_hle___cxa_guard_release(void);
+
+static void test_hle_libc(void) {
+    assert(vita_mem_init(GBASE, 64 * 1024) == 0);
+    vita_heap_init(GBASE + 32 * 1024, 16 * 1024);
+    vita_mem_bad_access = 0;
+
+    /* strlen measures inside guest memory. */
+    const char *msg = "cardgame";
+    for (uint32_t i = 0; i <= 8; i++) vita_write8(GBASE + 0x100 + i, (uint8_t)msg[i]);
+    r0 = GBASE + 0x100; vita_hle_strlen();
+    assert(r0 == 8);
+
+    /* strcpy copies the terminator too, which is why it needs len + 1. */
+    r0 = GBASE + 0x200; r1 = GBASE + 0x100; vita_hle_strcpy();
+    r0 = GBASE + 0x200; vita_hle_strlen();
+    assert(r0 == 8);
+    assert(vita_read8(GBASE + 0x208) == 0);
+
+    /* memcpy returns nothing we check, but must move the bytes. */
+    r0 = GBASE + 0x300; r1 = GBASE + 0x100; r2 = 9; vita_hle_memcpy();
+    r0 = GBASE + 0x300; r1 = GBASE + 0x100; r2 = 9; vita_hle_memcmp();
+    assert(r0 == 0);
+
+    /* strncpy pads the WHOLE remainder with NULs, not just one. */
+    for (uint32_t i = 0; i < 16; i++) vita_write8(GBASE + 0x400 + i, 0xAA);
+    r0 = GBASE + 0x400; r1 = GBASE + 0x100; r2 = 12; vita_hle_strncpy();
+    assert(vita_read8(GBASE + 0x408) == 0);
+    assert(vita_read8(GBASE + 0x40B) == 0);
+    assert(vita_read8(GBASE + 0x40C) == 0xAA);   /* and no further */
+
+    /* strchr returns a GUEST pointer, not a host one. */
+    r0 = GBASE + 0x100; r1 = 'g'; vita_hle_strchr();
+    assert(r0 == GBASE + 0x104);
+    r0 = GBASE + 0x100; r1 = 'z'; vita_hle_strchr();
+    assert(r0 == 0);
+
+    /* The heap hands out guest addresses inside its region, 8-aligned. */
+    uint32_t used0 = vita_heap_used();
+    r0 = 10; vita_hle_malloc();
+    uint32_t a = r0;
+    assert(a >= GBASE + 32 * 1024 && a < GBASE + 48 * 1024);
+    assert((a & 7u) == 0);
+    r0 = 10; vita_hle_malloc();
+    assert(r0 != a);                              /* distinct allocations */
+    assert(vita_heap_used() > used0);
+    r0 = 0; vita_hle_malloc();
+    assert(r0 == 0);                              /* malloc(0) is NULL here */
+
+    /* errno needs an address the guest can write through. */
+    vita_hle__sceLibcErrnoLoc();
+    assert(r0 != 0);
+    vita_write32(r0, 22);
+    vita_hle__sceLibcErrnoLoc();
+    assert(vita_read32(r0) == 22);
+
+    /* A static-init guard reports "run the constructor" exactly once. */
+    uint32_t guard = GBASE + 0x500;
+    vita_write8(guard, 0);
+    r0 = guard; vita_hle___cxa_guard_acquire(); assert(r0 == 1);
+    r0 = guard; vita_hle___cxa_guard_release();
+    r0 = guard; vita_hle___cxa_guard_acquire(); assert(r0 == 0);
+
+    /* None of the above should have touched anything unbacked. */
+    assert(vita_mem_bad_access == 0);
+
+    vita_mem_free();
+    printf("  hle: SceLibc over guest memory ok\n");
+}
+
 /* --- memory ----------------------------------------------------------------- */
 
 static void test_memory(void) {
@@ -273,6 +366,7 @@ int main(void) {
     test_extends();
     test_bitfields();
     test_dispatch();
+    test_hle_libc();
     test_memory();
     printf("all runtime tests passed\n");
     return 0;
