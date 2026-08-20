@@ -226,6 +226,21 @@ Masking bit 0 in one place matters here: every pointer to Thumb code carries it
 as an instruction-set marker, and a lookup that does not mask misses *every*
 entry by one.
 
+**Import stubs live in the same table.** A module reaches firmware through
+pointers as well as through `BL` — `module_start` makes its very first firmware
+call that way — so a dispatcher that only knows recompiled functions reports the
+C++ runtime init as a missing address. The two lists have the same shape already
+(guest address → `void(void)`) and both arrive sorted, so merging them keeps the
+lookup a single binary search instead of adding a second one. Where both claim
+an address the stub wins: being in the import table is what that address
+*means*, and the bytes discovery found there are the placeholder body the loader
+was supposed to overwrite.
+
+The search assumes a sorted table, and an unsorted one does not crash — it
+silently fails to find entries that are present, which looks exactly like
+missing coverage. `vita_dispatch_init` checks the order once and refuses to
+search a table that fails.
+
 ### Imports are bound, so firmware calls say what they are
 
 A module never calls firmware directly. It calls a **stub** inside its own

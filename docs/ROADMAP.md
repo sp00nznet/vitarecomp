@@ -133,12 +133,15 @@ and functions are emitted in address order, so a prefix is not a sample.
       than `vita_func_814BB75C()`, and a generated companion file gives every
       import a default that traps by name — so the output links from the first
       build and each firmware call announces itself
-- [ ] **Route indirect transfers through the import table.** Imports bind on a
-      direct `BL` to a stub, but `module_start` reaches its first firmware call
-      *through a pointer* — `vita_dispatch` sees `0x814B9590`, does not find it
-      in the function table, and traps. That address is
-      `SceLibc::__cxa_set_dso_handle_main`: a stub, not missing code. This is
-      the first thing standing between "runs" and "runs into the HLE"
+- [x] **Route indirect transfers through the import table.** Imports bound on
+      a direct `BL`, but `module_start` reaches its first firmware call
+      *through a pointer*, so that path never saw it. Stubs are now merged into
+      the same sorted dispatch table as functions (19,644 entries: 19,120 + 524)
+      rather than getting a second lookup. `vita_dispatch_init` refuses an
+      unsorted table, since an unsorted one silently fails to find entries that
+      are present — indistinguishable from missing coverage
+- [x] **Traps name the firmware function**, not just its NID. A NID is a hash;
+      "implement 0xBFE02B3A" is not a task anyone can start
 - [ ] The shallow ~92 of `SceGxm`: state setters, texture accessors, mapping
 - [ ] `SceLibc` / `SceLibm` (96 functions), largely host-forwardable
 - [ ] `sceKernel` — threads, memory blocks, sync primitives

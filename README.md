@@ -154,11 +154,20 @@ literal pools. They trap rather than being clamped.
 **Verified end to end at scale.** `emit` 1,500 functions → 15 MB of C →
 compiles, links against the runtime, and runs. It loads the ELF's own segments
 into guest memory, registers the dispatch table, calls `module_start`, and
-reaches `0x8100B936` — the first indirect transfer — where it stops with a
-named trap because the destination is a firmware import stub
-(`SceLibc::__cxa_set_dso_handle_main`) rather than translated code. Routing
-indirect transfers through the import table is the next piece, and is phase-6
-HLE work rather than a translation gap.
+reaches the C++ runtime init — where it stops on the first firmware function
+the game actually wants:
+
+```
+vitarecomp: unimplemented firmware import SceLibc::__cxa_set_dso_handle_main
+            at 0x814B9590 (NID 0xBFE02B3A)
+```
+
+That is the intended state for phase 6: the translation is done talking, and
+what remains is HLE. Indirect transfers resolve through the same table as
+direct ones — 19,644 entries for this module, 19,120 functions and 524 import
+stubs merged and sorted — because a module reaches firmware through pointers as
+well as through `BL`, and `module_start` makes its very first firmware call
+that way.
 
 ## Documentation
 
