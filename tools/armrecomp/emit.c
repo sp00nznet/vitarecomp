@@ -240,6 +240,27 @@ static void reg_operand(char *dst, size_t cap, int r, const arm_insn *in) {
     else         snprintf(dst, cap, "%s", reg_name(r));
 }
 
+/* A SOURCE register as a C expression, for the many places that want one
+ * inline in an fprintf rather than in a buffer.
+ *
+ * The division this enforces is the one that kept getting lost: a DESTINATION
+ * of r15 is a branch and is trapped by the guard in emit_insn, while a SOURCE
+ * of r15 is a CONSTANT this pass knows — the instruction's own address plus
+ * four, which is how the architecture defines reading the PC. Naming it "pc"
+ * is never right in either case, and reg_name() is now left naming only
+ * destinations.
+ *
+ * Rotating buffers because two sources can appear in one fprintf; the most any
+ * call site uses is two. */
+static const char *src_name(const arm_insn *in, int r) {
+    static char buf[4][32];
+    static unsigned next;
+    if (r != 15) return reg_name(r);
+    char *b = buf[next++ & 3];
+    snprintf(b, sizeof(buf[0]), "0x%08Xu", in->addr + 4);
+    return b;
+}
+
 /* The second operand of a data-processing instruction: an immediate, a plain
  * register, or a shifted register. */
 static void operand2(char *dst, size_t cap, const arm_insn *in) {
@@ -255,7 +276,7 @@ static void operand2(char *dst, size_t cap, const arm_insn *in) {
     if (in->rm == 15) { reg_operand(dst, cap, 15, in); return; }
     static const char *fn[4] = { "vita_lsl", "vita_lsr", "vita_asr", "vita_ror" };
     snprintf(dst, cap, "%s(%s, %u)", fn[in->shift_type & 3],
-             reg_name(in->rm), in->shift_amt);
+             src_name(in, in->rm), in->shift_amt);
 }
 
 /* The address expression for a load or store. */
@@ -280,12 +301,12 @@ static int address(char *dst, size_t cap, const arm_insn *in) {
      * with the same fields as the positive one, so ignoring it reads from the
      * wrong side of the base register. */
     if (in->has_imm && in->imm)
-        snprintf(dst, cap, "%s %c 0x%X", reg_name(in->rn),
+        snprintf(dst, cap, "%s %c 0x%X", src_name(in, in->rn),
                  in->mem_add ? '+' : '-', in->imm);
     else if (in->rm != ARM_NO_REG)
-        snprintf(dst, cap, "%s + %s", reg_name(in->rn), reg_name(in->rm));
+        snprintf(dst, cap, "%s + %s", src_name(in, in->rn), src_name(in, in->rm));
     else
-        snprintf(dst, cap, "%s", reg_name(in->rn));
+        snprintf(dst, cap, "%s", src_name(in, in->rn));
     return 1;
 }
 
@@ -455,7 +476,7 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
         }
 
         case OP_RSB:
-            fprintf(f, "    { uint32_t _a = 0, _b = %s;\n", reg_name(in->rn));
+            fprintf(f, "    { uint32_t _a = 0, _b = %s;\n", src_name(in, in->rn));
             fprintf(f, "      %s = _a - _b;\n", reg_name(in->rd));
             if (in->sets_flags)
                 fprintf(f, "      vita_flags_sub(_a, _b, %s);\n", reg_name(in->rd));
@@ -478,20 +499,20 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             static const char *fn2[4] = { "vita_lsl", "vita_lsr", "vita_asr", "vita_ror" };
             int which = in->op == OP_LSL ? 0 : in->op == OP_LSR ? 1
                       : in->op == OP_ASR ? 2 : 3;
-            const char *src = reg_name(in->rm == ARM_NO_REG ? in->rd : in->rm);
+            const char *src = src_name(in, in->rm == ARM_NO_REG ? in->rd : in->rm);
             if (in->has_imm)
                 fprintf(f, "    %s = %s(%s, %u);\n", reg_name(in->rd),
                         fn2[which], src, in->imm);
             else
                 fprintf(f, "    %s = %s(%s, %s & 0xFF);\n", reg_name(in->rd),
-                        fn2[which], reg_name(in->rd), reg_name(in->rm));
+                        fn2[which], reg_name(in->rd), src_name(in, in->rm));
             if (in->sets_flags) fprintf(f, "    vita_flags_nz(%s);\n", reg_name(in->rd));
             break;
         }
 
         case OP_MUL:
             fprintf(f, "    %s = %s * %s;\n", reg_name(in->rd),
-                    reg_name(in->rd), reg_name(in->rm));
+                    reg_name(in->rd), src_name(in, in->rm));
             if (in->sets_flags) fprintf(f, "    vita_flags_nz(%s);\n", reg_name(in->rd));
             break;
 
@@ -616,23 +637,23 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
             const char *fn3 = in->op == OP_SXTB ? "vita_sxtb"
                             : in->op == OP_SXTH ? "vita_sxth"
                             : in->op == OP_UXTB ? "vita_uxtb" : "vita_uxth";
-            fprintf(f, "    %s = %s(%s);\n", reg_name(in->rd), fn3, reg_name(in->rm));
+            fprintf(f, "    %s = %s(%s);\n", reg_name(in->rd), fn3, src_name(in, in->rm));
             break;
         }
 
         case OP_REV:
-            fprintf(f, "    %s = vita_rev(%s);\n", reg_name(in->rd), reg_name(in->rm));
+            fprintf(f, "    %s = vita_rev(%s);\n", reg_name(in->rd), src_name(in, in->rm));
             break;
 
         case OP_SBFX: case OP_UBFX:
             fprintf(f, "    %s = %s(%s, %u, %u);\n", reg_name(in->rd),
                     in->op == OP_SBFX ? "vita_sbfx" : "vita_ubfx",
-                    reg_name(in->rn), in->bf_lsb, in->bf_width);
+                    src_name(in, in->rn), in->bf_lsb, in->bf_width);
             break;
 
         case OP_BFI:
             fprintf(f, "    %s = vita_bfi(%s, %s, %u, %u);\n", reg_name(in->rd),
-                    reg_name(in->rd), reg_name(in->rn), in->bf_lsb, in->bf_width);
+                    reg_name(in->rd), src_name(in, in->rn), in->bf_lsb, in->bf_width);
             break;
 
         case OP_BFC:
@@ -642,10 +663,10 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
 
         case OP_CBZ: case OP_CBNZ:
             if (fb_has_label(b, in->target))
-                fprintf(f, "    if (%s %s 0) goto L_%08X;\n", reg_name(in->rn),
+                fprintf(f, "    if (%s %s 0) goto L_%08X;\n", src_name(in, in->rn),
                         in->op == OP_CBZ ? "==" : "!=", in->target);
             else
-                if (fs_has(fs, in->target)) fprintf(f, "    if (%s %s 0) { vita_func_%08X(); return; }\n", reg_name(in->rn), in->op == OP_CBZ ? "==" : "!=", in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); ok = 0; }
+                if (fs_has(fs, in->target)) fprintf(f, "    if (%s %s 0) { vita_func_%08X(); return; }\n", src_name(in, in->rn), in->op == OP_CBZ ? "==" : "!=", in->target); else { fprintf(f, "    vita_trap_indirect(0x%08X, 0x%08X);\n", in->addr, in->target); ok = 0; }
             break;
 
         case OP_B:
@@ -764,6 +785,10 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
              * the integer PUSH, and for the same reason. */
             uint32_t n     = in->imm;
             uint32_t words = in->vfp_dp ? n * 2 : n;
+            /* This base is written back, so it is an lvalue and not a
+             * source: resolving r15 to a constant here would emit an
+             * assignment to one. There is no such addressing mode. */
+            if (in->rn == 15) { ok = 0; trap(f, in, "vldm/vstm pc base"); break; }
             const char *rn = reg_name(in->rn);
 
             if (!in->mem_add) fprintf(f, "    %s -= %u;\n", rn, words * 4);
