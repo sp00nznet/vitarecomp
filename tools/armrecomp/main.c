@@ -805,6 +805,17 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
                "  build them as a static library listed AFTER the runtime;\n"
                "  implementing one is then just defining it\n",
                imppath, st.imports_used);
+    /* Said here rather than left to be discovered as a compiler error, because
+     * the error names a symptom nobody would connect to the cause. Each
+     * function becomes its own COMDAT section, and the COFF object format
+     * indexes at most 65,535 of them — so this is a COUNT limit, not a size
+     * limit, and it arrives without warning at a few tens of thousands of
+     * functions. */
+    if (st.funcs > 8000)
+        printf("\n%u functions is more COMDAT sections than a COFF object can index.\n"
+               "  MSVC needs /bigobj on this file; other toolchains do not care.\n",
+               st.funcs);
+
     printf("\nUntranslated instructions are named run-time traps, never silence.\n");
 
     nid_db_free(db);

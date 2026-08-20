@@ -279,6 +279,25 @@ which function the game wanted — rather than failing to link, or silently
 returning zero. Implementing one means removing its stub and providing a real
 body in the link.
 
+### Building the output at full scale
+
+Two things about compiling a whole recompiled module are worth knowing before
+meeting them as errors.
+
+**It is a section-count limit, not a size limit.** Each function becomes its own
+COMDAT section, and a COFF object file can index 65,535 of them. At 20,989
+functions this module goes straight past that and MSVC reports `C1128: number of
+sections exceeded object file format limit`, which names a symptom nobody would
+connect to the cause. `/bigobj` fixes it; other toolchains do not have the
+limit. `armrecomp emit` says so in its own output rather than leaving it to be
+discovered.
+
+**The import defaults must be a static library, listed after the runtime.** One
+file per import, one archive member per function. See the note in `emit.h`: a
+linker pulls an archive member only for a symbol still undefined, which is what
+makes implementing an import a matter of defining it rather than editing
+generated code.
+
 ## Stage 6 — the runtime
 
 ### Where the runtime earns its keep
