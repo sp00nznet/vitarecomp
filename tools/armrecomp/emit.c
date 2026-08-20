@@ -985,23 +985,77 @@ int em_emit(const vm_image *img, const vm_module *mod, const nid_db *db,
 
             fprintf(impf, "/* %s::%s  stub 0x%08X */\n",
                     lib ? lib : "?", fn ? fn : "(unresolved)", s->addr);
-            fprintf(impf, "void %s(void) { vita_trap_import(0x%08X, 0x%08X); }\n\n",
-                    sym, s->addr, s->func_nid);
+            /* The name goes into the trap, not just the comment: at run time
+             * the NID alone is a hash, and the whole reason imports are bound
+             * is so a gap says which firmware function the game wanted. */
+            if (fn)
+                fprintf(impf,
+                        "void %s(void) { vita_trap_import(0x%08X, 0x%08X, \"%s::%s\"); }\n\n",
+                        sym, s->addr, s->func_nid, lib ? lib : "?", fn);
+            else
+                fprintf(impf,
+                        "void %s(void) { vita_trap_import(0x%08X, 0x%08X, 0); }\n\n",
+                        sym, s->addr, s->func_nid);
         }
         st->imports_used = mod->stub_count;
     }
 
-    /* The dispatch table: every function, sorted by guest address, so an
-     * indirect transfer can find it at run time. Emitted for ALL discovered
-     * functions — including any not emitted under --limit, which have trapping
-     * stubs — because a dispatch that misses should report "we never translated
-     * that" rather than "that address is not a function". */
+    /* The dispatch table: every function AND every import stub, sorted by
+     * guest address, so an indirect transfer can find either at run time.
+     * Functions are emitted for ALL discovered addresses — including any not
+     * emitted under --limit, which have trapping stubs — because a dispatch
+     * that misses should report "we never translated that" rather than "that
+     * address is not a function".
+     *
+     * The stubs belong in the same table because a transfer to one is a
+     * firmware call. Imports bind at emit time on a direct BL, but a module
+     * reaches firmware through pointers too — `module_start` makes its very
+     * first firmware call that way — and those never pass through the BL path.
+     * Without this the dispatcher reports the game's first C++ runtime call as
+     * an unresolved address, which names the wrong problem: the code is not
+     * missing, it is firmware.
+     *
+     * One merged table rather than a second lookup: the entries have the same
+     * shape already (guest address -> void(void)), both lists arrive sorted,
+     * and merging keeps vita_dispatch a single binary search.
+     */
     fprintf(f, "/* ---------------------------------------------------------------\n");
-    fprintf(f, " * dispatch table -- %u entries, sorted by guest address\n", disc->count);
+    fprintf(f, " * dispatch table -- %u functions + %u import stubs,\n",
+            disc->count, mod->stub_count);
+    fprintf(f, " * sorted by guest address\n");
     fprintf(f, " * ------------------------------------------------------------- */\n");
     fprintf(f, "static const vita_dispatch_entry vita_functions[] = {\n");
-    for (uint32_t i = 0; i < fs.n; i++)
-        fprintf(f, "    { 0x%08Xu, vita_func_%08X },\n", fs.v[i], fs.v[i]);
+    {
+        uint32_t fi = 0, si = 0;
+        while (fi < fs.n || si < mod->stub_count) {
+            int take_stub;
+            if (fi >= fs.n)                            take_stub = 1;
+            else if (si >= mod->stub_count)            take_stub = 0;
+            else if (mod->stubs[si].addr < fs.v[fi])   take_stub = 1;
+            else if (mod->stubs[si].addr > fs.v[fi])   take_stub = 0;
+            else {
+                /* Both lists claim this address. The stub wins: being in the
+                 * import table is what the address MEANS, and the bytes
+                 * discovery found there are the placeholder body the loader
+                 * was supposed to overwrite. Translating that placeholder and
+                 * returning from it is the failure this whole layer exists to
+                 * prevent. */
+                take_stub = 1;
+                fi++;
+                st->stub_shadowed++;
+            }
+
+            if (take_stub) {
+                char sym[96];
+                hle_symbol(sym, sizeof(sym), db, &mod->stubs[si]);
+                fprintf(f, "    { 0x%08Xu, %s },\n", mod->stubs[si].addr, sym);
+                si++;
+            } else {
+                fprintf(f, "    { 0x%08Xu, vita_func_%08X },\n", fs.v[fi], fs.v[fi]);
+                fi++;
+            }
+        }
+    }
     fprintf(f, "};\n\n");
     fprintf(f, "void vita_register_functions(void) {\n");
     fprintf(f, "    vita_dispatch_init(vita_functions,\n");

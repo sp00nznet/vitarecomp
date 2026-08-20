@@ -7,6 +7,7 @@
  */
 
 #include "vitarecomp/recomp_rt.h"
+#include "vitarecomp/dispatch.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -186,6 +187,51 @@ static void test_bitfields(void) {
     printf("  bitfields                      ok\n");
 }
 
+/* --- dispatch ----------------------------------------------------------------
+ *
+ * The table now carries import stubs alongside recompiled functions, merged
+ * from two sorted lists. Both properties the search depends on are checked
+ * here: that the Thumb bit is masked, and that an unsorted table is refused
+ * rather than searched — an unsorted one does not crash, it silently fails to
+ * find entries that are present, which looks exactly like missing coverage.
+ */
+
+static int g_called;
+static void mark_a(void) { g_called = 1; }
+static void mark_b(void) { g_called = 2; }
+static void mark_c(void) { g_called = 3; }
+
+static void test_dispatch(void) {
+    static const vita_dispatch_entry sorted[] = {
+        { 0x81000100u, mark_a },
+        { 0x81000200u, mark_b },   /* an import stub, as far as the table knows */
+        { 0x81000300u, mark_c },
+    };
+    vita_dispatch_init(sorted, 3);
+
+    g_called = 0; vita_dispatch(0, 0x81000100u); assert(g_called == 1);
+    g_called = 0; vita_dispatch(0, 0x81000300u); assert(g_called == 3);
+
+    /* Every pointer to Thumb code carries bit 0 as an instruction-set marker.
+     * A lookup that does not mask it misses EVERY entry, by one. */
+    g_called = 0; vita_dispatch(0, 0x81000201u); assert(g_called == 2);
+
+    assert(vita_dispatch_hits() == 3);
+    assert(vita_dispatch_misses() == 0);
+
+    /* An unsorted table is refused outright: count goes to zero, so every
+     * lookup misses loudly instead of some lookups missing quietly. */
+    static const vita_dispatch_entry unsorted[] = {
+        { 0x81000300u, mark_c },
+        { 0x81000100u, mark_a },
+    };
+    vita_dispatch_init(unsorted, 2);
+    g_called = 0;
+    assert(vita_dispatch_hits() == 0);
+
+    printf("  dispatch, thumb bit and order  ok\n");
+}
+
 /* --- memory ----------------------------------------------------------------- */
 
 static void test_memory(void) {
@@ -226,6 +272,7 @@ int main(void) {
     test_conditions();
     test_extends();
     test_bitfields();
+    test_dispatch();
     test_memory();
     printf("all runtime tests passed\n");
     return 0;

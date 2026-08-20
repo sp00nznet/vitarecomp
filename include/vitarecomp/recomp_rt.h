@@ -165,7 +165,7 @@ static inline uint32_t vita_bfi(uint32_t dst, uint32_t src,
 
 void vita_trap_unimpl(uint32_t addr, uint32_t raw, const char *what);
 void vita_trap_indirect(uint32_t addr, uint32_t target);
-void vita_trap_import(uint32_t addr, uint32_t nid);
+void vita_trap_import(uint32_t addr, uint32_t nid, const char *name);
 
 /* Total traps hit. Only meaningful under VITARECOMP_TRACE=1, where execution
  * continues past them; otherwise the first one ends the program. */

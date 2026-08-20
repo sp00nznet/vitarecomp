@@ -746,6 +746,9 @@ static int cmd_emit(const char *path, const char *outpath, uint32_t limit,
            st.insns ? 100.0 * st.trapped / st.insns : 0.0);
     printf("  literals      %u  folded to constants\n", st.literals);
     printf("  import calls  %u  bound to firmware\n", st.import_calls);
+    if (st.stub_shadowed)
+        printf("  stubs shadowed %u  discovered as functions, routed as imports\n",
+               st.stub_shadowed);
 
     if (st.trap_kinds) {
         /* Ranked, because the question is always which one to do next. */

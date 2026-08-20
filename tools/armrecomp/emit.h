@@ -30,6 +30,11 @@ typedef struct {
     uint32_t import_calls; /* call sites bound to a firmware import  */
     uint32_t imports_used; /* distinct imports actually reached      */
 
+    /* Addresses discovery registered as functions that are really import
+     * stubs. The stub wins in the dispatch table; this counts how often
+     * discovery walked into the import table and believed what it found. */
+    uint32_t stub_shadowed;
+
     em_trap_kind traps[EM_MAX_TRAP_KINDS];
     uint32_t     trap_kinds;
     uint32_t     traps_other;   /* beyond the table's capacity */

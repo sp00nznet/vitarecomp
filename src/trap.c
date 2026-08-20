@@ -78,18 +78,24 @@ void vita_trap_indirect(uint32_t addr, uint32_t target) {
     abort();
 }
 
-void vita_trap_import(uint32_t addr, uint32_t nid) {
+/* `name` is the resolved "Library::function", or NULL when the NID database did
+ * not know it. Naming the function is the entire point of binding imports — a
+ * NID is a hash, and "implement 0xBFE02B3A" is not a task anyone can start. */
+void vita_trap_import(uint32_t addr, uint32_t nid, const char *name) {
     g_hits++;
+    if (!name) name = "(unresolved NID)";
     if (trace_on()) {
         /* Keyed on the NID, not the call site: the interesting question is
          * which firmware function is wanted, and the same one called from
          * three places is one thing to implement, not three. */
         if (first_time(nid ? nid : addr))
-            fprintf(g_out, "TRACE import  NID 0x%08X  (stub 0x%08X)\n", nid, addr);
+            fprintf(g_out, "TRACE import  %s  NID 0x%08X  (stub 0x%08X)\n",
+                    name, nid, addr);
         return;
     }
     fprintf(stderr,
-            "vitarecomp: unimplemented firmware import at 0x%08X (NID 0x%08X)\n",
-            addr, nid);
+            "vitarecomp: unimplemented firmware import %s"
+            " at 0x%08X (NID 0x%08X)\n",
+            name, addr, nid);
     abort();
 }
