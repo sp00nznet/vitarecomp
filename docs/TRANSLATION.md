@@ -161,3 +161,43 @@ The lesson generalises past this instruction set: a bucket named after its
 hardest member gets budgeted like its hardest member. Splitting it by encoding
 before writing any code turned "the largest remaining problem" into "half of it
 is `memcpy`".
+
+
+## What the running program asks for, which is not what the counts say
+
+Static counts rank NEON first because it is the largest bucket. Running the
+recompiled module ranks it first for a different and better reason: it is what
+execution actually stops on.
+
+A full boot — `module_start`, all 551 C++ static constructors, into game code —
+hits **79 distinct traps**:
+
+```
+  70  NEON, of which 64 are in ONE function around 0x8106CB10
+   8  indirect transfers
+   1  firmware import (SceLibc::exit)
+```
+
+Two things follow. First, the boot path needs almost no HLE: one import. The
+`SceGxm` work that dominates the *static* HLE list is not on the critical path
+to getting further. Second, the NEON is concentrated rather than spread — and
+`0x8106CB10` is one of the static constructors, a leaf that starts with `movw`
+and was invisible to discovery until pointer tables were read as tables.
+
+Sizing the actual job by encoding rather than by count:
+
+| | |
+|---|---:|
+| Advanced SIMD data-processing | 67 |
+| Core-register ↔ D-register transfer (`VMOV` 64-bit) | 3 |
+| **Distinct operation selectors across all of them** | **15** |
+
+Fifteen operation forms, not the whole instruction set. This is the third time
+splitting the SIMD bucket by encoding has turned "the largest remaining problem"
+into something with a number on it.
+
+**The honest limit of this list.** `VITARECOMP_TRACE=1` logs and continues, and
+past the first trap the machine state is wrong — every later trap is reached
+down a path that would not have happened on hardware. The *first* trap is solid
+(`0x81293F06`). The rest is a strong hint, not a specification, and the
+concentration in one function is the part worth trusting.
