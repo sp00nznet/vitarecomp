@@ -513,15 +513,19 @@ static int emit_insn(const vm_image *img, const vm_module *mod, const nid_db *db
 
         case OP_LDRD: case OP_STRD: {
             if (in->rn == ARM_NO_REG || in->rt2 == ARM_NO_REG) { ok = 0; break; }
+            /* rt/rt2 are named as variables, so neither may be the PC — there
+             * is no `pc` in cpu.h to load into or store from, deliberately. */
+            if (in->rt == 15 || in->rt2 == 15) { ok = 0; trap(f, in, "ldrd/strd pc"); break; }
             /* Two adjacent words. The offset is added or subtracted per the U
              * bit, and the second register is always four bytes above the
-             * first regardless of direction. */
+             * first regardless of direction.
+             *
+             * Through the shared address(), which is the only thing that knows
+             * how to resolve a PC-relative base. Building the string here is
+             * what put a bare `pc` in the output — the same mistake VLDR made,
+             * in the third place it could be made. */
             char base[64];
-            if (in->imm)
-                snprintf(base, sizeof(base), "%s %c 0x%X",
-                         reg_name(in->rn), in->mem_add ? '+' : '-', in->imm);
-            else
-                snprintf(base, sizeof(base), "%s", reg_name(in->rn));
+            if (!address(base, sizeof(base), in)) { ok = 0; trap(f, in, "ldrd/strd addr"); break; }
 
             if (in->op == OP_LDRD) {
                 fprintf(f, "    %s = vita_read32(%s);\n", reg_name(in->rt), base);

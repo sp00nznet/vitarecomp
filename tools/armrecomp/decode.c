@@ -791,13 +791,31 @@ static void decode_t32(uint16_t h1, uint16_t h2, arm_insn *o) {
             if (opf == 0x3) o->op = OP_MVN;       /* orn rn=15 -> mvn */
             o->rn = ARM_NO_REG;
         }
-        if (o->rd == 15 && o->sets_flags) {
-            /* Compare forms: the result is discarded, only flags matter. */
-            if (opf == 0x0) o->op = OP_TST;
-            if (opf == 0x4) o->op = OP_TST;       /* teq: same shape for us */
-            if (opf == 0x8) o->op = OP_CMN;
-            if (opf == 0xD) o->op = OP_CMP;
-            o->rd = ARM_NO_REG;
+        if (o->rd == 15) {
+            /* rd == 15 is not a destination here. With S set it selects the
+             * compare forms, where the result is discarded and only the flags
+             * matter — but ONLY for these four encodings. Every other opf with
+             * rd == 15 is UNPREDICTABLE in the architecture, and writing to
+             * the PC without S is a branch this path does not model.
+             *
+             * Clearing rd for those too is how `? = r1 & ~0x18A0000` reached a
+             * build: the op stayed BIC, the destination became "no register",
+             * and the emitter printed the placeholder as though it were a
+             * variable. Leaving op as OP_NONE traps instead, which is what an
+             * encoding we cannot translate is supposed to do. */
+            int compare = o->sets_flags
+                       && (opf == 0x0 || opf == 0x4 || opf == 0x8 || opf == 0xD);
+            if (compare) {
+                if (opf == 0x0) o->op = OP_TST;
+                if (opf == 0x4) o->op = OP_TST;   /* teq: same shape for us */
+                if (opf == 0x8) o->op = OP_CMN;
+                if (opf == 0xD) o->op = OP_CMP;
+                o->rd = ARM_NO_REG;
+            } else {
+                o->op = OP_NONE;
+                set(o, A_ALU, "alu.w rd=pc");
+                return;
+            }
         }
 
         if (is_imm) {
