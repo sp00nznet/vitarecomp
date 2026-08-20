@@ -263,7 +263,9 @@ The gaps are named and ranked, which makes them pick-up-able:
 
 - **NEON** — ~1,300 instructions, the only genuinely hard piece left in the emitter
 - **Branch-target promotion** — a discovery fix, 0.65%
-- **`SceLibc` / `SceLibm`** — 96 functions, largely host-forwardable
+- **`SceLibc` / `SceLibm`** — 72 of 96 left, largely host-forwardable
+- **Data-segment pointer recovery** — 551 static constructors are invisible to
+  discovery because shape recovery only scans the executable segment
 - **`sceGxm`** — ~85 shallow state setters, then the scene pipeline
 - **GXP shader translation** — a compiler, and the largest single piece
 - **A true negative for the corpus** — a module known to be encrypted, that the

@@ -64,6 +64,12 @@ obstacle on this platform.
 - [x] `armrecomp discover`
 - [ ] `SCE_RELA` relocation seeding — not applicable to `ET_SCE_EXEC` modules,
       which is the whole launch-window catalogue, but needed for 2015+ titles
+- [ ] **Scan the DATA segment for function pointers.** Shape recovery only
+      sweeps the executable segment, but the C++ `.init_array` lives in the rw
+      segment — so **all 551 static constructors are invisible to discovery**,
+      including the module's very first one at `0x81000000`. They are the first
+      code the program runs. `vm_image` models one segment and would need to
+      carry them all
 - [ ] Jump-table recognition — 17,970 indirect call sites remain unresolved
 - [ ] Function *boundary* quality: extents currently absorb tail calls
 
@@ -143,7 +149,19 @@ and functions are emitted in address order, so a prefix is not a sample.
 - [x] **Traps name the firmware function**, not just its NID. A NID is a hash;
       "implement 0xBFE02B3A" is not a task anyone can start
 - [ ] The shallow ~92 of `SceGxm`: state setters, texture accessors, mapping
-- [ ] `SceLibc` / `SceLibm` (96 functions), largely host-forwardable
+- [x] **The link arrangement.** Import defaults are one file per import, built
+      as a static library listed after the runtime. A linker pulls an archive
+      member only for a symbol still undefined, so implementing an import is
+      just defining it. One translation unit does NOT work: the unimplemented
+      stubs drag the object in carrying the implemented ones
+- [x] **`SceLibc` batch 1 — 24 of 68.** C++/CRT init (`__cxa_*`, TLS, errno),
+      the mem/str family, and a bump-allocator guest heap. The semantics are
+      free — SceLibc is the standard C library — the *boundary* is the work:
+      every pointer argument is a guest address, and a string's length is in
+      the data, so `vita_mem_avail()` bounds the scan a host `strlen` would
+      otherwise run off the end of
+- [ ] `SceLibc` remainder (44) and `SceLibm` (28), largely host-forwardable
+- [ ] **A real allocator.** The heap is a bump allocator; `free` is a no-op
 - [ ] `sceKernel` — threads, memory blocks, sync primitives
 - [ ] GXP reflection, then the scene pipeline
 - [ ] GXP shader translation — a compiler, and the largest single piece
