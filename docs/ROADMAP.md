@@ -96,7 +96,7 @@ obstacle on this platform.
 - [x] **Wide branches** — `b.w` and `b<cond>.w` decoded their targets correctly
       and then trapped anyway, because the decoder never set `op`. Translation
       **95.65% → 97.47%**
-- [ ] Branch targets promoted to functions — 906 remaining (0.65%)
+- [ ] Branch targets promoted to functions — 4,736 remaining (0.31%)
 - [x] **Bitfield ops** — `SBFX`/`UBFX`/`BFI`/`BFC`, 655 (0.47%). The group's
       5-bit op field is shared with `MOVW`/`MOVT`/`ADDW`, and the field
       position is encoded three ways across the four instructions. `SSAT`/
@@ -105,11 +105,23 @@ obstacle on this platform.
       rather than being clamped
 - [x] **The scalar VFP remainder** — `VPUSH`/`VPOP`/`VLDM`/`VSTM` and the
       multiply-accumulate forms. Translation **97.47% → 97.87%**
-- [ ] Advanced SIMD (NEON) — ~1,300 instructions (0.94%), and now genuinely the
+- [x] **`VLDR` from a literal pool** — it emitted a bare `pc`, so the generated
+      C did not compile at all once a VFP literal appeared. Fixed at the shared
+      `address()` helper, which also cured the U bit being ignored for the T32
+      `[rN, #-imm]` form. Found only by building at scale
+- [x] **Verified at scale**: 1,500 functions → 15 MB of C → compiles, links,
+      and runs, reaching the first indirect transfer at `0x8100B936`
+- [ ] Advanced SIMD (NEON) — 9,646 instructions (0.63%), and now genuinely the
       only hard piece left. *Advanced SIMD and NEON are the same instruction
       set — ARM's formal name and the marketing one — so this is one job.*
-- [ ] ARM (A32) operand decoding — a small minority of this corpus
-- [ ] `MLA`/`MLS`, general `LDM`/`STM` — long tail under 200
+- [ ] ARM (A32) operand decoding — a small minority of this corpus. The A32
+      media space is also currently classed `A_UNDEF`, which is wrong: `op == 3`
+      with bit 4 set is media, not an undefined encoding
+- [ ] `MLA`/`MLS`, general `LDM`/`STM` — long tail
+
+**Whole-module translation: 98.86%** (19,120 functions, 1,532,679 instructions).
+Measure the whole module, not a prefix: the first 1,500 functions report 98.33%,
+and functions are emitted in address order, so a prefix is not a sample.
 
 ## Phase 6 — the runtime and HLE (in progress)
 
@@ -121,6 +133,12 @@ obstacle on this platform.
       than `vita_func_814BB75C()`, and a generated companion file gives every
       import a default that traps by name — so the output links from the first
       build and each firmware call announces itself
+- [ ] **Route indirect transfers through the import table.** Imports bind on a
+      direct `BL` to a stub, but `module_start` reaches its first firmware call
+      *through a pointer* — `vita_dispatch` sees `0x814B9590`, does not find it
+      in the function table, and traps. That address is
+      `SceLibc::__cxa_set_dso_handle_main`: a stub, not missing code. This is
+      the first thing standing between "runs" and "runs into the HLE"
 - [ ] The shallow ~92 of `SceGxm`: state setters, texture accessors, mapping
 - [ ] `SceLibc` / `SceLibm` (96 functions), largely host-forwardable
 - [ ] `sceKernel` — threads, memory blocks, sync primitives

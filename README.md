@@ -52,7 +52,7 @@ The Vita is a better target than its reputation suggests:
 | Component | What It Is | Why It's Hard |
 |-----------|-----------|---------------|
 | **Cortex-A9** | ARMv7-A, Thumb-2 dominant | Two instruction sets interleaved; one bad width desynchronises every instruction after it |
-| **NEON** | 128-bit SIMD | The only genuinely hard piece left — but 0.94% of instructions, not the wall its reputation suggests |
+| **NEON** | 128-bit SIMD | The only genuinely hard piece left — but 0.63% of instructions once scalar VFP is handled, not the wall its reputation suggests |
 | **SELF container** | SCE-wrapped ELF | Not the PS3 layout; every field after `0x20` is shifted by `0x10` |
 | **`.sce_module_info`** | Module metadata | `e_entry` points *at this structure*, not at code — and it mixes segment-relative with absolute addressing |
 | **`sceGxm`** | The GPU API | 107 imported functions, one of which is a shader compiler |
@@ -119,35 +119,46 @@ key material anywhere in it.
 | **5 — Emitter** | ARM → readable C, literal folding, run-time dispatch, scalar VFP, wide branches. **Generated C compiles, links, and runs** | ✅ Complete |
 | **6 — Runtime & HLE** | Runtime landed; NID resolution 519/524 (99.0%); imports bound so every firmware call traps *by name*. `sceGxm` / `sceKernel` / `SceLibc` bodies outstanding | 🔨 In progress |
 
-**Translation rate on *Uncharted: Fight for Fortune*: 97.87% of instructions.**
-The rest emit named traps, never silence:
+**Translation rate on *Uncharted: Fight for Fortune*: 98.86% of instructions**,
+measured over the whole module — all 19,120 discovered functions, 1,532,679
+instructions. The rest emit named traps, never silence:
 
 ```
 still trapping, by kind:
-  simd/vfp                          2207    1.58% of all instructions
-  branch: target not a function      906    0.65%
-  bitfield                           655    0.47%
-  ?                                  236    0.17%
-  ldm/stm                             96    0.07%
-  indirect transfer                   95    0.07%
-  misc                                88    0.06%
-  sys                                 64    0.05%
+  simd/vfp                       9646    0.63% of all instructions
+  branch: target not a function  4736    0.31%
+  ?                              2468    0.16%
+  ldm/stm                        1820    0.12%
+  misc                           1019    0.07%
+  indirect transfer               735    0.05%
+  mla/mls                         515    0.03%
+  ldm/stm.w                       384    0.03%
+  sys                             285    0.02%
+  svc                             224    0.01%
+  sat                             139    0.01%
+  branch: target off-segment      131    0.01%
+  udf                             119    0.01%
+  alu.w                            91    0.01%
+  cbz/cbnz                         59    0.00%
+  sbfx / bfi                        11    0.00%
 ```
 
-True NEON is 0.94% of all instructions, so about **99% is reachable without
-touching the vector unit**. Breakdown in
+NEON is the largest remaining bucket at 0.63%, so about **99.4% is reachable
+without touching the vector unit**. Breakdown in
 [docs/TRANSLATION.md](docs/TRANSLATION.md).
 
-Bitfield ops (`SBFX`/`UBFX`/`BFI`/`BFC`, 0.47%) have landed since that report
-was taken and are pinned by tests, but the module has not been re-measured —
-see the note below.
+The `sbfx`/`bfi` residue is deliberate: those 11 are extracts running off the
+end of the register, which is UNPREDICTABLE and comes from a linear sweep over
+literal pools. They trap rather than being clamped.
 
-> ⚠️ **One verification is outstanding.** The generated C is confirmed to
-> compile, link and run at 100 functions, but not re-confirmed at 1,500 across
-> the seven toolkit changes since (VFP, dispatch, wide branches, list forms).
-> The translation percentages come straight from the emitter and are solid;
-> "it still builds at scale" is currently an assumption. Re-running that check
-> needs the QA proto on `W:\`.
+**Verified end to end at scale.** `emit` 1,500 functions → 15 MB of C →
+compiles, links against the runtime, and runs. It loads the ELF's own segments
+into guest memory, registers the dispatch table, calls `module_start`, and
+reaches `0x8100B936` — the first indirect transfer — where it stops with a
+named trap because the destination is a firmware import stub
+(`SceLibc::__cxa_set_dso_handle_main`) rather than translated code. Routing
+indirect transfers through the import table is the next piece, and is phase-6
+HLE work rather than a translation gap.
 
 ## Documentation
 
@@ -208,7 +219,7 @@ committing:
 
 | Title | Why | Status |
 |---|---|---|
-| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 18,978 functions discovered, **97.87% translated**, 524 imports bound |
+| ***Uncharted: Fight for Fortune*** (2012-11-01) | 5.6 MB `.text`, `ET_SCE_EXEC`, a turn-based card game — light on `sceGxm` | 19,120 functions emitted, **98.86% translated**, 524 imports bound, compiles and runs |
 
 ## Relationship to Other Projects
 

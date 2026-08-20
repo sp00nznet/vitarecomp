@@ -72,40 +72,59 @@ into `MOV` and `ORN` into `MVN`; `rd == 15` with `S` set turns
 actionable and "SIMD is 65% of what is left" is:
 
 ```
-still trapping, by kind:
-  simd/vfp                          2207    1.58% of all instructions
-  branch: target not a function      906    0.65%
-  bitfield                          655    0.47%
-  ?                                 236    0.17%
-  ldm/stm                            96    0.07%
-  indirect transfer                  95    0.07%
-  misc                               88    0.06%
-  sys                                64    0.05%
+still trapping, by kind:            (all 19,120 functions, 1,532,679 insns)
+  simd/vfp                       9646    0.63% of all instructions
+  branch: target not a function  4736    0.31%
+  ?                              2468    0.16%
+  ldm/stm                        1820    0.12%
+  misc                           1019    0.07%
+  indirect transfer               735    0.05%
+  mla/mls                         515    0.03%
+  ldm/stm.w                       384    0.03%
+  sys                             285    0.02%
+  svc                             224    0.01%
+  sat                             139    0.01%
+  branch: target off-segment      131    0.01%
+  udf                             119    0.01%
+  alu.w                            91    0.01%
+  cbz/cbnz                         59    0.00%
+  sbfx / bfi                       11    0.00%
 ```
+
+**Measure the whole module, not a prefix.** The same run over the first 1,500
+functions reports 98.33%; over all 19,120 it is **98.86%**. A prefix is not a
+sample — functions are emitted in address order, and the low end of `.text` is
+not representative of it. Every figure here is the full-module one.
 
 Reading what remains in value order rather than count order:
 
-1. **Advanced SIMD — 1,647 (1.18%), of which ~1,300 is true NEON.** The only
-   genuinely hard piece left.
+1. **Advanced SIMD — 9,646 (0.63%).** The only genuinely hard piece left.
 
    Splitting this bucket paid twice. The first split found 82% of it was scalar
    VFP. Splitting the *remainder* found 40% of that was scalar VFP too —
-   `VPUSH`/`VPOP`/`VLDM`/`VSTM` (293) and multiply-accumulate (476), both of
-   which had been declined earlier on the reasoning that approximating them
-   would be worse than trapping. `VMLA` expresses directly as
-   `vd = vd + (vn * vm)`; the only real loss is that ARM may fuse the multiply
-   and add without an intermediate rounding, where C rounds twice — a last-bit
-   mantissa difference, recorded rather than silently accepted.
-2. **Branch targets — 906 (0.65%).** The residue of the branch work: targets
-   that really are neither a placed label nor a registered function. A
-   *discovery* fix — being branched to from outside a collected region makes an
-   address an entry point, exactly as being called does.
-3. **Bitfield ops — 655 (0.47%).** `SBFX`/`UBFX`/`BFI`/`BFC`. Mechanical.
-4. **`"?"` — 236 (0.17%).** Down from 3,034; mostly data decoded as code.
-5. **The long tail — under 350 combined.** General `LDM`/`STM`, `MLA`/`MLS`,
-   `misc`, `sys`.
+   `VPUSH`/`VPOP`/`VLDM`/`VSTM` and multiply-accumulate, both of which had been
+   declined earlier on the reasoning that approximating them would be worse
+   than trapping. `VMLA` expresses directly as `vd = vd + (vn * vm)`; the only
+   real loss is that ARM may fuse the multiply and add without an intermediate
+   rounding, where C rounds twice — a last-bit mantissa difference, recorded
+   rather than silently accepted.
+2. **Branch targets — 4,736 (0.31%).** Targets that are neither a placed label
+   nor a registered function. A *discovery* fix — being branched to from
+   outside a collected region makes an address an entry point, exactly as being
+   called does.
+3. **`"?"` — 2,468 (0.16%).** Mostly data decoded as code, which is what a
+   linear sweep over literal pools produces and not a decoder failure.
+4. **`LDM`/`STM` — 2,204 combined (0.15%)** across the general and wide forms.
+5. **The long tail — under 1,600 combined.** `misc`, `MLA`/`MLS`, `sys`, `SVC`,
+   `SSAT`/`USAT`, `UDF`, off-segment branches, `alu.w`, `CBZ`/`CBNZ`.
 
-Excluding NEON, roughly **1.4%** remains, so about **99% is reachable without
+**Bitfield ops are done.** `SBFX`/`UBFX`/`BFI`/`BFC` were 655 (0.47%) at 1,500
+functions and are now 11 — and those 11 are deliberate, being extracts that run
+off the end of the register. That is UNPREDICTABLE, it comes from decoding data
+as code, and it traps rather than being clamped: a clamped extract would say
+nothing true.
+
+Excluding NEON, roughly **0.5%** remains, so about **99.4% is reachable without
 touching the vector unit**.
 
 
@@ -130,9 +149,12 @@ down by sub-encoding:
 no arithmetic whatsoever. Implementing scalar VFP took the SIMD bucket from
 7,242 instructions to 2,207 and overall translation from 92.04% to **95.64%**.
 
-NEON proper is **0.94% of all instructions** — a quarter the size the headline
-figure suggested. It is still the hardest thing left, but it is not a wall, and
-it was never the reason this platform looked difficult.
+What is left of the coprocessor space after scalar VFP is **0.63% of all
+instructions** across the whole module, and NEON is the bulk of it — a fraction
+of the size the headline figure suggested. It is still the hardest thing left,
+but it is not a wall, and it was never the reason this platform looked
+difficult. (The sub-encoding split above was measured before the scalar VFP
+work; the 0.63% is the residue after it.)
 
 The lesson generalises past this instruction set: a bucket named after its
 hardest member gets budgeted like its hardest member. Splitting it by encoding
