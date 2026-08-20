@@ -23,11 +23,34 @@
 /* Offsets inside the module tables are relative to the segment base, not
  * absolute, so both bases are needed to resolve one. */
 typedef struct {
+    uint32_t file;            /* p_offset  */
+    uint32_t vaddr;           /* p_vaddr   */
+    uint32_t len;             /* p_filesz  */
+} vm_seg;
+
+#define VM_MAX_DATA_SEGS 8
+
+typedef struct {
     const uint8_t *data;      /* the whole ELF file                     */
     size_t         size;
     uint32_t       seg_file;  /* p_offset of the executable segment     */
     uint32_t       seg_vaddr; /* p_vaddr of the executable segment      */
     uint32_t       seg_len;   /* p_filesz                               */
+
+    /* The other PT_LOAD segments — the writable data the module ships with.
+     *
+     * These are for SCANNING ONLY, and are deliberately NOT reachable through
+     * vm_va(). That is the whole point of keeping them in a separate list:
+     * vm_va backs literal-pool folding, and folding a word out of writable
+     * data would bake a value into the generated C that the program changes at
+     * run time. Reading data here to find function POINTERS is safe in a way
+     * that reading it for VALUES is not.
+     *
+     * They matter because the C++ static-constructor table lives here, not in
+     * .text — so a discovery pass that only sweeps the executable segment
+     * cannot see the first code the program runs. */
+    vm_seg         data_segs[VM_MAX_DATA_SEGS];
+    uint32_t       data_seg_count;
 } vm_image;
 
 typedef struct {

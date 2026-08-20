@@ -47,6 +47,11 @@ typedef struct {
     uint32_t seeds_export;
     uint32_t seeds_call;
     uint32_t seeds_shape;
+    /* Of seeds_shape, how many came from the DATA segments rather than from
+     * .text. Kept apart because they are found in a table of pointers rather
+     * than among instructions, which is a far better place to look — merging
+     * the counts would hide which sweep is doing the work. */
+    uint32_t seeds_shape_data;
     uint32_t rejected_shape;
     uint32_t simd_insns;
     uint32_t indirect_sites;

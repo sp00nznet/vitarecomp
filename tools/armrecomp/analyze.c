@@ -143,19 +143,65 @@ static void walk(const vm_image *img, vf_result *r, seedq *q,
  * address is far more likely to be a real function pointer than a coincidence.
  */
 
-static void shape_scan(const vm_image *img, vf_result *r, seedq *q) {
+/* Does this word have the SHAPE of a pointer to Thumb code? Cheap, and
+ * deliberately says nothing about whether a function is there. */
+static int code_ptr_shape(const vm_image *img, const uint8_t *p, uint32_t *out) {
+    uint32_t w = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+               | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    if (!(w & 1)) return 0;                       /* Thumb pointers only */
+    uint32_t t = w & ~1u;
+    if (t < img->seg_vaddr || t >= img->seg_vaddr + img->seg_len) return 0;
+    if ((t - img->seg_vaddr) & 1) return 0;
+    *out = t;
+    return 1;
+}
+
+/* How many consecutive words from `off` have that shape.
+ *
+ * This is the evidence that turns a guess into a reading. Four adjacent words
+ * that are all Thumb-tagged, all correctly aligned, and all land inside a
+ * 5.6 MB window of a 4 GB space do not happen by accident — the odds are
+ * around 1 in 10^13. Such a run is a POINTER TABLE, and knowing that is worth
+ * more than any property of the individual entries. */
+#define SHAPE_RUN_MIN 4
+
+static uint32_t shape_run_len(const vm_image *img, const uint8_t *scan,
+                              uint32_t scan_len, uint32_t off) {
+    uint32_t n = 0, t;
+    while (off + 4 <= scan_len && code_ptr_shape(img, scan + off, &t)) {
+        n++;
+        off += 4;
+    }
+    return n;
+}
+
+/* Sweep one region for words that look like pointers INTO the executable
+ * segment. The region being scanned and the region being pointed at are two
+ * different things: candidates come from wherever the module stores pointers,
+ * but a valid target is always code. */
+static uint32_t shape_scan_region(const vm_image *img, vf_result *r, seedq *q,
+                                  const uint8_t *scan, uint32_t scan_len) {
     const uint8_t *text = img->data + img->seg_file;
     const uint32_t base = img->seg_vaddr;
     const uint32_t len  = img->seg_len;
+    uint32_t found = 0;
+    uint32_t run_left = 0;      /* words remaining in the current table */
 
-    for (uint32_t off = 0; off + 4 <= len; off += 4) {
-        uint32_t w = (uint32_t)text[off] | ((uint32_t)text[off + 1] << 8)
-                   | ((uint32_t)text[off + 2] << 16) | ((uint32_t)text[off + 3] << 24);
+    for (uint32_t off = 0; off + 4 <= scan_len; off += 4) {
+        uint32_t t;
 
-        if (!(w & 1)) continue;                   /* Thumb pointers only */
-        uint32_t t = w & ~1u;
-        if (t < base || t >= base + len) { continue; }
-        if ((t - base) & 1) continue;
+        /* Only measure when not already inside a table, so a long run costs
+         * one measurement rather than one per entry. A run too short to
+         * qualify is at most SHAPE_RUN_MIN words, so re-measuring across it is
+         * bounded and cheap. */
+        if (run_left == 0) {
+            uint32_t n = shape_run_len(img, scan, scan_len, off);
+            if (n >= SHAPE_RUN_MIN) run_left = n;
+        }
+        int in_table = run_left > 0;
+        if (run_left) run_left--;
+
+        if (!code_ptr_shape(img, scan + off, &t)) continue;
 
         /* Do not re-seed something already decoded: that is not a discovery. */
         if (seen_get(r, t - base)) continue;
@@ -174,16 +220,48 @@ static void shape_scan(const vm_image *img, vf_result *r, seedq *q) {
          * functions overwhelmingly begin by pushing registers — PUSH (0xB4xx /
          * 0xB5xx) or PUSH.W / STMDB (0xE92D). A leaf function that pushes
          * nothing will be missed, which is why the two tiers are counted and
-         * reported separately rather than merged into one number. */
+         * reported separately rather than merged into one number.
+         *
+         * INSIDE A TABLE the filter is not just unnecessary, it is wrong. A
+         * word in a run has already been established as a pointer by its
+         * neighbours, so demanding a prologue of it only throws away the
+         * functions that genuinely lack one. On this corpus's first title that
+         * is 47 of the 551 static constructors, and they are exactly the kind
+         * you would expect: leaves that start with `movw` because they store a
+         * constant and save nothing, and one that is a bare `bx lr`. Each one
+         * missed is a run-time trap in a table the program walks at startup. */
         uint16_t h = (uint16_t)(text[t - base] | ((uint16_t)text[t - base + 1] << 8));
         int prologue = ((h & 0xFE00) == 0xB400)          /* push            */
                     || (h == 0xE92D)                     /* push.w / stmdb  */
                     || ((h & 0xFF80) == 0xB080);         /* sub sp, #imm    */
 
-        if (!prologue) { r->rejected_shape++; continue; }
+        if (!prologue && !in_table) { r->rejected_shape++; continue; }
 
         sq_push(q, t, ARM_T32, 1);
         r->seeds_shape++;
+        found++;
+    }
+    return found;
+}
+
+static void shape_scan(const vm_image *img, vf_result *r, seedq *q) {
+    shape_scan_region(img, r, q, img->data + img->seg_file, img->seg_len);
+
+    /* The data segments, which is where a C++ module keeps the table of
+     * static constructors. Nothing in .text points at them: the only reference
+     * to a constructor is its slot in that table, so a sweep of the executable
+     * segment alone finds none of them — on this corpus's first title, all 551,
+     * including the module's very first function.
+     *
+     * Counted separately from the .text sweep. They are the same heuristic run
+     * over different bytes, but a table of pointers is a much richer place to
+     * find pointers than a code segment is, and merging the two numbers would
+     * hide which one is doing the work. */
+    for (uint32_t i = 0; i < img->data_seg_count; i++) {
+        const vm_seg *s = &img->data_segs[i];
+        if ((uint64_t)s->file + s->len > img->size) continue;
+        r->seeds_shape_data +=
+            shape_scan_region(img, r, q, img->data + s->file, s->len);
     }
 }
 

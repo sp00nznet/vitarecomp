@@ -528,21 +528,36 @@ static int cmd_cover(const char *path) {
 
 /* --- funcs: the module's own account of what it needs ---------------------- */
 
-/* Locate the executable segment and describe it for the module parser. */
+/* Locate the executable segment and describe it for the module parser, and
+ * collect the loadable non-executable ones for discovery to scan. */
 static int exec_image(const uint8_t *buf, size_t size, const vc_module *m,
                       vm_image *img) {
+    int found = 0;
+    img->data           = buf;
+    img->size           = size;
+    img->data_seg_count = 0;
+
     for (int i = 0; i < m->phdr_count; i++) {
-        if (!(m->phdr[i].flags & 1)) continue;
         if (m->phdr[i].filesz == 0) continue;
         if ((uint64_t)m->phdr[i].offset + m->phdr[i].filesz > size) continue;
-        img->data      = buf;
-        img->size      = size;
-        img->seg_file  = m->phdr[i].offset;
-        img->seg_vaddr = m->phdr[i].vaddr;
-        img->seg_len   = m->phdr[i].filesz;
-        return 1;
+        /* PT_LOAD only. The SCE_RELA and SCE_VERSION segments carry a vaddr of
+         * zero and are not part of the address space. */
+        if (m->phdr[i].type != 1) continue;
+
+        if (m->phdr[i].flags & 1) {
+            if (found) continue;                 /* first executable segment wins */
+            img->seg_file  = m->phdr[i].offset;
+            img->seg_vaddr = m->phdr[i].vaddr;
+            img->seg_len   = m->phdr[i].filesz;
+            found = 1;
+        } else if (img->data_seg_count < VM_MAX_DATA_SEGS) {
+            vm_seg *s = &img->data_segs[img->data_seg_count++];
+            s->file  = m->phdr[i].offset;
+            s->vaddr = m->phdr[i].vaddr;
+            s->len   = m->phdr[i].filesz;
+        }
     }
-    return 0;
+    return found;
 }
 
 static int load_module(const char *path, uint8_t **buf, size_t *size,
@@ -675,6 +690,10 @@ static int cmd_discover(const char *path) {
     printf("  call targets        %u\n", r.seeds_call);
     printf("  pointer shape       %u  (heuristic; %u candidates rejected)\n",
            r.seeds_shape, r.rejected_shape);
+    printf("    of which in .text %u\n", r.seeds_shape - r.seeds_shape_data);
+    printf("    in data segments  %u  (%u segment%s scanned)\n",
+           r.seeds_shape_data, img.data_seg_count,
+           img.data_seg_count == 1 ? "" : "s");
 
     printf("\nfunctions:            %u\n", r.count);
     printf("  from seeds          %u\n", principled);
